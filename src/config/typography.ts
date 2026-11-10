@@ -15,6 +15,12 @@ export const typography = {
       letterSpacing: 12,
       color: palette.accent,
     },
+    button: {
+      fontSize: 30,
+      fontStyle: 'bold',
+      letterSpacing: 2,
+      color: palette.textPrimary,
+    },
     tagline: {
       fontSize: 18,
       color: palette.textSecondary,
@@ -23,6 +29,32 @@ export const typography = {
       fontSize: 12,
       letterSpacing: 2,
       color: palette.textMuted,
+    },
+    qualityLabel: {
+      fontSize: 13,
+      letterSpacing: 1,
+      color: palette.textMuted,
+    },
+    qualityOption: {
+      fontSize: 11,
+      fontStyle: 'bold',
+      color: palette.textSecondary,
+    },
+    frameRateOption: {
+      fontSize: 11,
+      fontStyle: 'bold',
+      color: palette.textSecondary,
+    },
+    settingsTitle: {
+      fontSize: 14,
+      fontStyle: 'bold',
+      letterSpacing: 1,
+      color: palette.textPrimary,
+    },
+    settingsClose: {
+      fontSize: 20,
+      fontStyle: 'bold',
+      color: palette.textSecondary,
     },
   },
 } as const;

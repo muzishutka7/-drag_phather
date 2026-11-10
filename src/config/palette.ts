@@ -1,6 +1,7 @@
 export const palette = {
   background: 0x101820,
   accent: 0xf05a36,
+  buttonBorder: 0xff936f,
   textPrimary: 0xf3f5f7,
   textSecondary: 0xaab4bb,
   textMuted: 0x79868e,
