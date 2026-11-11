@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Drag Racing 2D</string>
+    <string name="title_activity_main">Drag Racing 2D</string>
+    <string name="package_name">com.muzishutka7.dragracing2d</string>
+    <string name="custom_url_scheme">com.muzishutka7.dragracing2d</string>
+</resources>
