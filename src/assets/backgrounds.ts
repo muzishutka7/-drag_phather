@@ -8,6 +8,7 @@ export const backgroundNames = [
   'sunset-drift',
   'sunny-garage',
   'parts-garage',
+  'race-panorama',
 ] as const;
 
 export type BackgroundName = (typeof backgroundNames)[number];

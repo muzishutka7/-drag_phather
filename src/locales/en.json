@@ -1,9 +1,9 @@
 {
   "gameTitle": "DRAG RACING",
-  "garageTitle": "GARAGE",
   "gameMode": "2D",
   "tagline": "A new racing story starts here",
   "raceButton": "RACE!",
+  "raceStart": "START",
   "graphicsQuality": "GRAPHICS",
   "renderResolution": "RENDER",
   "resolutionLow": "50%",

@@ -1,9 +1,9 @@
 {
   "gameTitle": "ДРАГ-РЕЙСИНГ",
-  "garageTitle": "ГАРАЖ",
   "gameMode": "2D",
   "tagline": "Твоя нова гоночна історія починається тут",
   "raceButton": "ГОНКА!",
+  "raceStart": "СТАРТ",
   "graphicsQuality": "ГРАФІКА",
   "renderResolution": "РЕНДЕР",
   "resolutionLow": "50%",
