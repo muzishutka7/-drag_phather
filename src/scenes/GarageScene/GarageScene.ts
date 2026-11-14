@@ -262,7 +262,9 @@ export class GarageScene extends Phaser.Scene {
 
   private cancelStoreTransition(): void {
     this.isTransitioning = false;
-    this.tweens.killTweensOf(this.storeButton);
+    if (this.storeButton) {
+      this.tweens.killTweensOf(this.storeButton);
+    }
     this.storeButton?.setAlpha(1).setScale(1).setInteractive();
     this.graphicsSettings?.setEnabled(true);
   }

@@ -257,7 +257,9 @@ export class PartsStoreScene extends Phaser.Scene {
 
   private cancelTransition(): void {
     this.isTransitioning = false;
-    this.tweens.killTweensOf(this.backButton);
+    if (this.backButton) {
+      this.tweens.killTweensOf(this.backButton);
+    }
     this.backButton?.setAlpha(1).setScale(1).setInteractive();
     this.graphicsSettings?.setEnabled(true);
   }

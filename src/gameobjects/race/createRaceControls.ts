@@ -7,29 +7,13 @@ const PADDLE_WIDTH = 82;
 const PADDLE_HEIGHT = 220;
 const SCREEN_EDGE_INSET = 82;
 const PEDAL_BOTTOM_INSET = 58;
-const WARMUP_BAR_TOP_OFFSET = 78;
 const PADDLE_OFFSET_X = 460;
 const PADDLE_OFFSET_Y = -190;
-const WARMUP_TARGET_MIN = 70;
-const WARMUP_TARGET_MAX = 80;
-const WARMUP_EARLY_GREEN_MIN = 55;
-const WARMUP_EARLY_GREEN_MAX = 65;
-const WARMUP_PRE_TARGET_MIN = 65;
-const WARMUP_PRE_TARGET_COLOR = 0xb59a31;
-const WARMUP_TARGET_COLOR = 0x174d2b;
-const WARMUP_COLOR_STOPS = [
-  { value: 0, color: 0x55bde8 },
-  { value: 30, color: 0x55b879 },
-  { value: 60, color: 0xf0c94a },
-  { value: 80, color: 0xe94b45 },
-  { value: 100, color: 0xe94b45 },
-] as const;
 
 export interface RaceControls {
   container: Phaser.GameObjects.Container;
   isThrottlePressed: () => boolean;
   isBrakePressed: () => boolean;
-  setTireWarmup: (value: number, throttlePressed: boolean) => void;
   destroy: () => void;
   layout: (
     width: number,
@@ -51,8 +35,7 @@ export function createRaceControls(
   const acceleratorPedal = drawPedal(scene, 'accelerator-pedal', palette.accent);
   const leftPaddle = drawPaddle(scene, 'upshift-paddle', true);
   const rightPaddle = drawPaddle(scene, 'downshift-paddle', false);
-  const warmupBar = scene.add.graphics().setName('tire-warmup-bar').setVisible(false);
-  container.add([brakePedal, acceleratorPedal, leftPaddle, rightPaddle, warmupBar]);
+  container.add([brakePedal, acceleratorPedal, leftPaddle, rightPaddle]);
   makePaddleInteractive(leftPaddle, onShiftUp);
   makePaddleInteractive(rightPaddle, onShiftDown);
 
@@ -60,8 +43,22 @@ export function createRaceControls(
   let brakePressed = false;
   let activePointerId: number | undefined;
   let activeBrakePointerId: number | undefined;
-  const throttleKey = scene.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.W);
-  const brakeKey = scene.input.keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.S);
+  const keyboard = scene.input.keyboard;
+  const throttleKeys = [
+    keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.W),
+    keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.UP),
+  ];
+  const brakeKeys = [
+    keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.S),
+    keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.DOWN),
+  ];
+  const shiftUpKey = keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.E);
+  const shiftDownKey = keyboard?.addKey(Phaser.Input.Keyboard.KeyCodes.Q);
+  shiftUpKey?.on('down', onShiftUp);
+  shiftDownKey?.on('down', onShiftDown);
+  const anyDown = (keys: Array<Phaser.Input.Keyboard.Key | undefined>): boolean => (
+    keys.some((key) => Boolean(key?.isDown))
+  );
 
   const releaseThrottle = (pointer: Phaser.Input.Pointer): void => {
     if (!throttlePressed || (pointer && pointer.id !== activePointerId)) {
@@ -128,12 +125,8 @@ export function createRaceControls(
 
   return {
     container,
-    isThrottlePressed: () => throttlePressed || Boolean(throttleKey?.isDown),
-    isBrakePressed: () => brakePressed || Boolean(brakeKey?.isDown),
-    setTireWarmup: (value, isThrottlePressed) => {
-      const visible = isThrottlePressed || value > 0;
-      drawWarmupBar(warmupBar, value, visible);
-    },
+    isThrottlePressed: () => throttlePressed || anyDown(throttleKeys),
+    isBrakePressed: () => brakePressed || anyDown(brakeKeys),
     destroy: () => {
       if (throttlePressed) {
         throttlePressed = false;
@@ -147,12 +140,12 @@ export function createRaceControls(
       activeBrakePointerId = undefined;
       scene.input.off(Phaser.Input.Events.POINTER_UP, releaseThrottle);
       scene.input.off(Phaser.Input.Events.POINTER_UP, releaseBrake);
-      if (throttleKey) {
-        scene.input.keyboard?.removeKey(throttleKey);
-      }
-      if (brakeKey) {
-        scene.input.keyboard?.removeKey(brakeKey);
-      }
+      [...throttleKeys, ...brakeKeys, shiftUpKey, shiftDownKey].forEach((key) => {
+        if (key) {
+          key.removeAllListeners();
+          keyboard?.removeKey(key);
+        }
+      });
     },
     layout: (width, height, layoutScale, clusterX, clusterY, clusterScale) => {
       const localPosition = (screenX: number, screenY: number) => ({
@@ -173,14 +166,6 @@ export function createRaceControls(
       acceleratorPedal.setPosition(acceleratorPosition.x, acceleratorPosition.y);
       leftPaddle.setPosition(-PADDLE_OFFSET_X, PADDLE_OFFSET_Y);
       rightPaddle.setPosition(PADDLE_OFFSET_X, PADDLE_OFFSET_Y);
-
-      const barPosition = localPosition(
-        width / 2,
-        WARMUP_BAR_TOP_OFFSET * layoutScale,
-      );
-      warmupBar
-        .setPosition(barPosition.x, barPosition.y)
-        .setScale(layoutScale / clusterScale);
     },
   };
 }
@@ -205,89 +190,6 @@ function makePaddleInteractive(
   });
   paddle.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, () => paddle.setScale(1));
   paddle.on(Phaser.Input.Events.POINTER_OUT, () => paddle.setScale(1));
-}
-
-function drawWarmupBar(
-  graphics: Phaser.GameObjects.Graphics,
-  value: number,
-  visible: boolean,
-): void {
-  const width = 300;
-  const height = 18;
-  const inset = 3;
-  graphics.clear().setVisible(visible);
-  if (!visible) {
-    return;
-  }
-
-  const innerWidth = width - inset * 2;
-  const innerLeft = -width / 2 + inset;
-  const barTop = -height / 2 + inset;
-  const barHeight = height - inset * 2;
-
-  graphics.fillStyle(0x252a29, 0.9);
-  graphics.fillRect(innerLeft, barTop, innerWidth, barHeight);
-
-  graphics.fillStyle(WARMUP_TARGET_COLOR, 0.95);
-  graphics.fillRect(
-    innerLeft + innerWidth * WARMUP_EARLY_GREEN_MIN / 100,
-    barTop,
-    innerWidth * (WARMUP_EARLY_GREEN_MAX - WARMUP_EARLY_GREEN_MIN) / 100,
-    barHeight,
-  );
-  graphics.fillStyle(WARMUP_PRE_TARGET_COLOR, 0.95);
-  graphics.fillRect(
-    innerLeft + innerWidth * WARMUP_PRE_TARGET_MIN / 100,
-    barTop,
-    innerWidth * (WARMUP_TARGET_MIN - WARMUP_PRE_TARGET_MIN) / 100,
-    barHeight,
-  );
-  graphics.fillStyle(WARMUP_TARGET_COLOR, 0.95);
-  graphics.fillRect(
-    innerLeft + innerWidth * WARMUP_TARGET_MIN / 100,
-    barTop,
-    innerWidth * (WARMUP_TARGET_MAX - WARMUP_TARGET_MIN) / 100,
-    barHeight,
-  );
-
-  const clampedValue = Phaser.Math.Clamp(value, 0, 100);
-  const fillWidth = innerWidth * clampedValue / 100;
-  if (fillWidth > 0) {
-    const fillSteps = Math.ceil(clampedValue);
-    for (let step = 0; step < fillSteps; step += 1) {
-      const startValue = clampedValue * step / fillSteps;
-      const endValue = clampedValue * (step + 1) / fillSteps;
-      const startX = innerLeft + innerWidth * startValue / 100;
-      const endX = innerLeft + innerWidth * endValue / 100;
-      graphics.fillStyle(getWarmupColor((startValue + endValue) / 2), 1);
-      graphics.fillRect(startX, barTop, endX - startX, barHeight);
-    }
-  }
-
-  graphics.lineStyle(2, palette.textPrimary, 0.9);
-  graphics.strokeRoundedRect(-width / 2, -height / 2, width, height, height / 2);
-}
-
-function getWarmupColor(value: number): number {
-  const upperStopIndex = WARMUP_COLOR_STOPS.findIndex((stop) => stop.value >= value);
-  const nextStop = WARMUP_COLOR_STOPS[Math.max(upperStopIndex, 0)];
-  const previousStop = WARMUP_COLOR_STOPS[Math.max(upperStopIndex - 1, 0)];
-  const progress = nextStop.value === previousStop.value
-    ? 0
-    : (value - previousStop.value) / (nextStop.value - previousStop.value);
-  const red = interpolateColorChannel(previousStop.color >> 16, nextStop.color >> 16, progress);
-  const green = interpolateColorChannel(
-    (previousStop.color >> 8) & 0xff,
-    (nextStop.color >> 8) & 0xff,
-    progress,
-  );
-  const blue = interpolateColorChannel(previousStop.color & 0xff, nextStop.color & 0xff, progress);
-
-  return (red << 16) | (green << 8) | blue;
-}
-
-function interpolateColorChannel(from: number, to: number, progress: number): number {
-  return Math.round(from + (to - from) * Phaser.Math.Clamp(progress, 0, 1));
 }
 
 function drawPedal(

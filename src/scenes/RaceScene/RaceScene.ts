@@ -12,12 +12,19 @@ import {
   raceAssetNames,
   type RaceAssetKeys,
 } from '../../assets/raceAssets';
+import { RaceAudio } from '../../audio/raceAudio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/gameConfig';
 import { palette } from '../../config/palette';
 import { drawWheel } from '../../gameobjects/cars/carDrawing';
 import { createSportsCoupe } from '../../gameobjects/cars/createSportsCoupe';
 import { createRaceControls, type RaceControls } from '../../gameobjects/race/createRaceControls';
+import { createRaceHud, type RaceHud } from '../../gameobjects/race/createRaceHud';
+import {
+  createTireWarmupGauge,
+  type TireWarmupGauge,
+} from '../../gameobjects/race/createTireWarmupGauge';
 import { RaceEngine, type DrivenAxle } from '../../gameobjects/race/raceEngine';
+import { RaceSession } from '../../gameobjects/race/raceSession';
 import {
   getGraphicsQuality,
   setGraphicsQuality,
@@ -46,7 +53,13 @@ const CAR_WHEELS = [
   { axle: 'front', x: 72, y: 19 },
 ] as const satisfies ReadonlyArray<{ axle: DrivenAxle; x: number; y: number }>;
 const WHEEL_RADIUS = 20;
+/** Visual cap so fast wheels do not strobe. */
 const MAX_WHEEL_ANGULAR_VELOCITY = Math.PI * 10;
+/** How many screen pixels (at 960×540 layout) one meter of track takes. */
+const PIXELS_PER_METER = 28;
+/** Distance from the car origin to its front bumper, in car-local pixels. */
+const CAR_FRONT_OFFSET = 124;
+const BACKGROUND_PARALLAX = 0.08;
 const TACHOMETER_MAX_RPM = 9_000;
 const INSTRUMENT_POSITION = { x: 719.5, y: 568 };
 const INSTRUMENT_SCALE = 0.35826;
@@ -72,6 +85,14 @@ export class RaceScene extends Phaser.Scene {
   private carContainer?: Phaser.GameObjects.Container;
   private wheels: Array<{ axle: DrivenAxle; image: Phaser.GameObjects.Graphics }> = [];
   private engine = new RaceEngine();
+  private session = new RaceSession(this.engine);
+  private hud?: RaceHud;
+  private warmupGauge?: TireWarmupGauge;
+  private trackMarks?: Phaser.GameObjects.Graphics;
+  private audio?: RaceAudio;
+  private soundEvents = { countdown: -1, amber: 0, green: false, phase: '', gear: 0 };
+  private drivenWheelRotation = 0;
+  private freeWheelRotation = 0;
   private instrumentContainer?: Phaser.GameObjects.Container;
   private raceControls?: RaceControls;
   private dashboardImage?: Phaser.GameObjects.Image;
@@ -85,8 +106,11 @@ export class RaceScene extends Phaser.Scene {
 
   init(): void {
     this.isBackgroundLoading = false;
-    this.engine.reset();
+    this.session.restart();
     this.wheels = [];
+    this.drivenWheelRotation = 0;
+    this.freeWheelRotation = 0;
+    this.soundEvents = { countdown: -1, amber: 0, green: false, phase: '', gear: 0 };
   }
 
   preload(): void {
@@ -101,11 +125,15 @@ export class RaceScene extends Phaser.Scene {
     this.createBackground();
     this.createRoad();
     this.createRaceArtwork();
+    this.audio = new RaceAudio(this);
     this.drawRace(this.scale.width, this.scale.height);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     window.addEventListener('resize', this.handleViewportResize);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.raceControls?.destroy();
+      this.hud?.destroy();
+      this.audio?.destroy();
+      this.audio = undefined;
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
       window.removeEventListener('resize', this.handleViewportResize);
     });
@@ -116,32 +144,23 @@ export class RaceScene extends Phaser.Scene {
       return;
     }
 
-    const throttlePressed = this.raceControls.isThrottlePressed();
-    const brakePressed = this.raceControls.isBrakePressed();
-    this.engine.update(delta, throttlePressed, brakePressed);
-    this.raceControls.setTireWarmup(this.engine.tireWarmup, throttlePressed);
+    const throttle = this.raceControls.isThrottlePressed();
+    const brake = this.raceControls.isBrakePressed();
+    this.session.update(delta, { throttle, brake });
 
-    const topSpeed = this.engine.profile.gears[this.engine.profile.gears.length - 1].maxSpeedKph;
-    const vehicleSpeedProgress = Phaser.Math.Clamp(
-      this.engine.speedKph / topSpeed,
-      0,
-      1,
-    );
-    const wheelSpeed = vehicleSpeedProgress * MAX_WHEEL_ANGULAR_VELOCITY;
-    const deltaSeconds = Math.min(delta / 1000, 0.1);
-    this.wheels.forEach(({ axle, image }) => {
-      const drivetrain = this.engine.profile.drivetrain;
-      const isDriven = drivetrain === 'all-wheel'
-        || (drivetrain === 'front-wheel' && axle === 'front')
-        || (drivetrain === 'rear-wheel' && axle === 'rear');
-      if (isDriven) {
-        image.rotation = Phaser.Math.Wrap(
-          image.rotation + wheelSpeed * deltaSeconds,
-          0,
-          Math.PI * 2,
-        );
-      }
+    const phase = this.session.phase;
+    this.hud?.update(this.session);
+    this.warmupGauge?.container.setVisible(phase === 'burnout' || phase === 'staging');
+    this.warmupGauge?.update({
+      warmup: this.engine.tireWarmup,
+      gripMultiplier: this.engine.gripMultiplier,
+      countdownSeconds: phase === 'burnout' ? this.session.countdownSeconds : undefined,
+      locked: this.engine.lockedGripMultiplier !== undefined,
     });
+
+    this.updateWheels(delta);
+    this.updateTrack();
+    this.updateSound();
     this.gearReadout?.setText(this.engine.gear === 0 ? 'N' : String(this.engine.gear));
     const calibratedSpeedProgress = this.getSpeedometerProgress();
     this.speedNeedle?.setRotation(
@@ -157,12 +176,135 @@ export class RaceScene extends Phaser.Scene {
     this.tachometerNeedle?.setRotation(NEEDLE_START_ANGLE + Math.PI * rpmProgress);
   }
 
+  private updateSound(): void {
+    const audio = this.audio;
+    if (!audio) {
+      return;
+    }
+
+    const engine = this.engine;
+    const session = this.session;
+    audio.update({
+      rpm: engine.rpm,
+      idleRpm: engine.profile.idleRpm,
+      redlineRpm: engine.profile.redlineRpm,
+      firing: engine.firing,
+      wheelSpinKph: engine.wheelSpinSpeedKph,
+      speedKph: engine.speedKph,
+    });
+
+    const events = this.soundEvents;
+    const countdown = session.phase === 'burnout' && session.countdownSeconds !== undefined
+      ? Math.ceil(session.countdownSeconds)
+      : -1;
+    if (countdown > 0 && countdown !== events.countdown) {
+      audio.playCountdownTick(countdown);
+    }
+    events.countdown = countdown;
+
+    if (session.phase !== events.phase) {
+      if (session.phase === 'staging') {
+        audio.playGripLocked();
+      } else if (session.phase === 'finished') {
+        audio.playFinish();
+      }
+      events.phase = session.phase;
+    }
+
+    if (session.amberLights > events.amber) {
+      audio.playAmberLight();
+    }
+    events.amber = session.amberLights;
+
+    if (session.greenLight && !events.green) {
+      audio.playGreenLight();
+    }
+    events.green = session.greenLight;
+
+    if (engine.gear !== events.gear) {
+      audio.playGearShift();
+      events.gear = engine.gear;
+    }
+  }
+
+  private updateWheels(delta: number): void {
+    const deltaSeconds = Math.min(delta / 1000, 0.1);
+    const radius = this.engine.profile.wheelRadiusMeters;
+    const advance = (rotation: number, surfaceSpeed: number): number => Phaser.Math.Wrap(
+      rotation + Math.min(surfaceSpeed / radius, MAX_WHEEL_ANGULAR_VELOCITY) * deltaSeconds,
+      0,
+      Math.PI * 2,
+    );
+    this.drivenWheelRotation = advance(this.drivenWheelRotation, this.engine.wheelSurfaceSpeedMps);
+    this.freeWheelRotation = advance(this.freeWheelRotation, this.engine.velocityMps);
+
+    const drivetrain = this.engine.profile.drivetrain;
+    this.wheels.forEach(({ axle, image }) => {
+      const isDriven = drivetrain === 'all-wheel'
+        || (drivetrain === 'front-wheel' && axle === 'front')
+        || (drivetrain === 'rear-wheel' && axle === 'rear');
+      image.rotation = isDriven ? this.drivenWheelRotation : this.freeWheelRotation;
+    });
+  }
+
+  /** Scrolls the road and draws the start and finish lines. */
+  private updateTrack(): void {
+    const { width, height } = this.scale;
+    const layoutScale = Math.min(width / GAME_WIDTH, height / GAME_HEIGHT);
+    const pixelsPerMeter = PIXELS_PER_METER * layoutScale;
+    const distance = this.engine.distanceMeters;
+    const roadHeight = height * ROAD_HEIGHT_RATIO;
+    const roadScale = roadHeight / ROAD_TEXTURE_HEIGHT;
+
+    if (this.roadImage) {
+      this.roadImage.tilePositionX = (distance * pixelsPerMeter) / roadScale;
+    }
+
+    if (this.backgroundImage) {
+      const maxShift = Math.max(0, this.backgroundImage.displayWidth - width);
+      this.backgroundImage.x = -Math.min(maxShift, distance * pixelsPerMeter * BACKGROUND_PARALLAX);
+    }
+
+    if (!this.trackMarks) {
+      return;
+    }
+
+    this.trackMarks.clear();
+    const frontX = (CAR_POSITION_X + CAR_FRONT_OFFSET * CAR_SCALE) * layoutScale;
+    const top = height - roadHeight + 31 * roadScale;
+    const bottom = height - 4 * roadScale;
+    const drawLine = (meters: number, checkered: boolean): void => {
+      const x = frontX + (meters - distance) * pixelsPerMeter;
+      if (x < -40 || x > width + 40) {
+        return;
+      }
+
+      const lineWidth = 14 * layoutScale;
+      if (!checkered) {
+        this.trackMarks?.fillStyle(0xf3f5f7, 0.9);
+        this.trackMarks?.fillRect(x - lineWidth / 2, top, lineWidth / 2, bottom - top);
+        return;
+      }
+
+      const cell = lineWidth / 2;
+      for (let y = top, row = 0; y < bottom; y += cell, row += 1) {
+        for (let column = 0; column < 2; column += 1) {
+          this.trackMarks?.fillStyle((row + column) % 2 === 0 ? 0xf3f5f7 : 0x151718, 1);
+          this.trackMarks?.fillRect(x - lineWidth / 2 + column * cell, y, cell, Math.min(cell, bottom - y));
+        }
+      }
+    };
+    drawLine(0, false);
+    drawLine(this.session.distanceMeters, true);
+  }
+
   private handleViewportResize = (): void => {
     this.applyRenderResolution();
   };
 
   private getSpeedometerProgress(): number {
-    const topSpeed = this.engine.profile.gears[this.engine.profile.gears.length - 1].maxSpeedKph;
+    // The dial artwork is calibrated against this reference speed.
+    const topSpeed = SPEEDOMETER_REFERENCE_SPEED_KPH;
     if (topSpeed >= SPEEDOMETER_MAX_KPH) {
       return Phaser.Math.Clamp(this.engine.speedKph / SPEEDOMETER_MAX_KPH, 0, 1);
     }
@@ -336,6 +478,14 @@ export class RaceScene extends Phaser.Scene {
       () => this.engine.shiftDown(),
     );
     this.instrumentContainer.add(this.raceControls.container);
+    this.trackMarks = this.add.graphics().setName('track-marks').setDepth(-0.5);
+    this.warmupGauge = createTireWarmupGauge(this, this.engine.profile.tires);
+    this.hud = createRaceHud(
+      this,
+      (distance) => this.session.selectDistance(distance),
+      () => this.session.restart(),
+      () => this.scene.start('GarageScene'),
+    );
     this.layoutRaceArtwork(this.scale.width, this.scale.height);
   }
 
@@ -382,6 +532,8 @@ export class RaceScene extends Phaser.Scene {
       clusterY,
       clusterScale,
     );
+    this.warmupGauge?.layout(width, layoutScale);
+    this.hud?.layout(width, height, layoutScale);
   }
 
   private positionNeedle(

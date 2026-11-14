@@ -1,38 +1,77 @@
 import {
   STARTER_COUPE_PROFILE,
   type CarEngineProfile,
+  type TireProfile,
 } from '../cars/carProfiles';
 
 export type DrivenAxle = 'front' | 'rear';
 
-const WARMUP_MIN_VALUE = 0;
-const WARMUP_MAX_SLIP_SPEED_KPH = 20;
-const LIMITER_AVERAGE_TORQUE_FACTOR = 0.35;
-const MAX_WHEEL_SLIP_SPEED_KPH = 60;
-const GRAVITY_METERS_PER_SECOND_SQUARED = 9.81;
-const LIMITER_CYCLE_RADIANS_PER_SECOND = Math.PI * 8;
-const MAX_DELTA_SECONDS = 0.1;
-const WARMUP_MAX_RISE_PER_SECOND = 100;
-const WARMUP_FALL_PER_SECOND = 40;
-const WARMUP_RATE_RAMP_SECONDS = 1;
-const TORQUE_NM_PER_HP_RPM = 7_127;
+export interface EngineInput {
+  throttle: boolean;
+  brake: boolean;
+  /**
+   * The car is held in place (staging / burnout box): the body cannot move,
+   * but the driven wheels can still spin. Brake input is ignored while held.
+   */
+  holdVehicle: boolean;
+}
 
+const GRAVITY = 9.81;
+const AIR_DENSITY = 1.2;
+const RPM_TO_RAD = (Math.PI * 2) / 60;
+const RAD_TO_RPM = 1 / RPM_TO_RAD;
+const MPS_TO_KPH = 3.6;
+const TORQUE_NM_PER_HP_RPM = 7_127;
+/** Physics runs at a fixed step so results do not depend on the frame rate. */
+const FIXED_STEP_SECONDS = 1 / 240;
+const MAX_FRAME_SECONDS = 0.1;
+/** Slip below this (m/s) is treated as rolling without slip. */
+const SLIP_EPSILON_MPS = 0.05;
+const CLUTCH_SYNC_EPSILON_RAD = 2;
+
+/**
+ * Longitudinal drag car model.
+ *
+ * Engine → clutch → gearbox → driven wheels → tire friction → car body.
+ * Wheel spin appears naturally when the force at the contact patch would exceed
+ * what the tire can transmit (grip × load × warmup multiplier).
+ */
 export class RaceEngine {
   readonly profile: CarEngineProfile;
-  rpm: number;
   gear = 0;
-  speedKph = 0;
-  wheelSpinSpeedKph = 0;
-  tireWarmup = WARMUP_MIN_VALUE;
-  private limiterPhase = 0;
-  private limiterActive = false;
-  private throttleWasPressed = false;
-  private throttleRampSeconds = 0;
-  private releaseRampSeconds = 0;
+  /** Vehicle speed, m/s. */
+  velocityMps = 0;
+  /** Surface speed of the driven wheels, m/s. */
+  wheelSurfaceSpeedMps = 0;
+  distanceMeters = 0;
+  /** 0..100 */
+  tireWarmup = 0;
+  /** When set, the warmup no longer changes and grip uses this value. */
+  lockedGripMultiplier: number | undefined;
+  limiterActive = false;
+  /** True while the engine is producing power (throttle on, not cut by the limiter). */
+  firing = false;
+
+  private engineSpeedRad: number;
+  private clutchLocked = false;
+  private shiftTimerSeconds = 0;
+  private accumulatorSeconds = 0;
 
   constructor(profile: CarEngineProfile = STARTER_COUPE_PROFILE) {
     this.profile = profile;
-    this.rpm = profile.idleRpm;
+    this.engineSpeedRad = profile.idleRpm * RPM_TO_RAD;
+  }
+
+  get rpm(): number {
+    return this.engineSpeedRad * RAD_TO_RPM;
+  }
+
+  get speedKph(): number {
+    return this.velocityMps * MPS_TO_KPH;
+  }
+
+  get wheelSpinSpeedKph(): number {
+    return Math.max(0, this.wheelSurfaceSpeedMps - this.velocityMps) * MPS_TO_KPH;
   }
 
   get torqueNm(): number {
@@ -43,14 +82,22 @@ export class RaceEngine {
     return getPowerHpAtRpm(this.profile, this.rpm);
   }
 
+  get isShifting(): boolean {
+    return this.shiftTimerSeconds > 0;
+  }
+
+  /** Grip multiplier that the tires give right now. */
+  get gripMultiplier(): number {
+    return this.lockedGripMultiplier ?? getGripMultiplier(this.profile.tires, this.tireWarmup);
+  }
+
   shiftUp(): void {
     if (this.gear >= this.profile.gears.length) {
       return;
     }
 
     this.gear += 1;
-    this.updateRpmFromSpeed();
-    this.limiterActive = false;
+    this.startShift();
   }
 
   shiftDown(): void {
@@ -58,224 +105,263 @@ export class RaceEngine {
       return;
     }
 
-    if (this.gear === 1) {
-      this.gear = 0;
-      this.limiterActive = false;
-      return;
-    }
-
-    const lowerGear = this.profile.gears[this.gear - 2];
-    if (this.speedKph > lowerGear.maxSpeedKph) {
-      return;
-    }
-
     this.gear -= 1;
-    this.updateRpmFromSpeed();
-    this.limiterActive = false;
+    this.startShift();
+  }
+
+  lockTireWarmup(): number {
+    this.lockedGripMultiplier = getGripMultiplier(this.profile.tires, this.tireWarmup);
+    return this.lockedGripMultiplier;
   }
 
   reset(): void {
-    this.rpm = this.profile.idleRpm;
     this.gear = 0;
-    this.speedKph = 0;
-    this.wheelSpinSpeedKph = 0;
-    this.tireWarmup = WARMUP_MIN_VALUE;
-    this.limiterPhase = 0;
+    this.velocityMps = 0;
+    this.wheelSurfaceSpeedMps = 0;
+    this.distanceMeters = 0;
+    this.tireWarmup = 0;
+    this.lockedGripMultiplier = undefined;
     this.limiterActive = false;
-    this.throttleWasPressed = false;
-    this.throttleRampSeconds = 0;
-    this.releaseRampSeconds = 0;
+    this.firing = false;
+    this.engineSpeedRad = this.profile.idleRpm * RPM_TO_RAD;
+    this.clutchLocked = false;
+    this.shiftTimerSeconds = 0;
+    this.accumulatorSeconds = 0;
   }
 
-  update(deltaMs: number, throttlePressed: boolean, brakePressed = false): void {
-    const deltaSeconds = Math.min(deltaMs / 1000, MAX_DELTA_SECONDS);
+  update(deltaMs: number, input: EngineInput): void {
+    this.accumulatorSeconds += Math.min(deltaMs / 1000, MAX_FRAME_SECONDS);
+    while (this.accumulatorSeconds >= FIXED_STEP_SECONDS) {
+      this.step(FIXED_STEP_SECONDS, input);
+      this.accumulatorSeconds -= FIXED_STEP_SECONDS;
+    }
+  }
 
-    if (throttlePressed && !brakePressed) {
-      if (!this.throttleWasPressed) {
-        this.throttleRampSeconds = 0;
-        this.releaseRampSeconds = 0;
-      }
-      this.throttleWasPressed = true;
-      this.throttleRampSeconds = Math.min(
-        WARMUP_RATE_RAMP_SECONDS,
-        this.throttleRampSeconds + deltaSeconds,
+  private startShift(): void {
+    this.clutchLocked = false;
+    this.shiftTimerSeconds = this.profile.shiftTimeSeconds;
+  }
+
+  private step(dt: number, input: EngineInput): void {
+    const p = this.profile;
+    const idleRad = p.idleRpm * RPM_TO_RAD;
+    const radius = p.wheelRadiusMeters;
+    this.shiftTimerSeconds = Math.max(0, this.shiftTimerSeconds - dt);
+
+    // --- Engine torque (fuel cut above the redline = real rev limiter) ---
+    this.limiterActive = this.rpm >= p.redlineRpm
+      || (this.limiterActive && this.rpm > p.redlineRpm - 150);
+    const brakingTorque = p.engineBrakeTorqueNm
+      + (p.engineBrakeTorquePer1000RpmNm * this.rpm) / 1000;
+    this.firing = input.throttle && !this.limiterActive;
+    const engineTorque = this.firing
+      ? getTorqueAtRpm(p, this.rpm)
+      : -brakingTorque;
+
+    // --- Clutch / gearbox ---
+    const inGear = this.gear > 0 && !this.isShifting;
+    const totalRatio = inGear ? p.gears[this.gear - 1].ratio * p.finalDriveRatio : 0;
+    const coupledEngineRad = (this.wheelSurfaceSpeedMps / radius) * totalRatio;
+
+    let clutchTorque = 0;
+    if (!inGear) {
+      this.clutchLocked = false;
+    } else if (this.clutchLocked && coupledEngineRad < idleRad) {
+      // Too slow for this gear: the driver presses the clutch instead of stalling.
+      this.clutchLocked = false;
+    }
+
+    if (inGear && !this.clutchLocked) {
+      const engagement = clamp01(
+        (this.rpm - p.idleRpm) / (p.clutchFullEngageRpm - p.idleRpm),
       );
+      const capacity = p.clutchMaxTorqueNm * Math.max(engagement, 0.15);
+      const direction = Math.sign(this.engineSpeedRad - coupledEngineRad);
+      clutchTorque = capacity * direction;
+      // The engine cannot be dragged below idle by the clutch.
+      if (this.engineSpeedRad <= idleRad && engineTorque - clutchTorque < 0) {
+        clutchTorque = Math.max(0, engineTorque);
+      }
+    }
 
-      if (this.gear === 0) {
-        this.recoverWheelSpin(deltaSeconds);
-        this.speedKph = Math.max(
-          0,
-          this.speedKph - this.profile.coastDecelerationKphPerSecond * deltaSeconds,
-        );
-        if (this.limiterActive) {
-          this.limiterPhase = (
-            this.limiterPhase + LIMITER_CYCLE_RADIANS_PER_SECOND * deltaSeconds
-          ) % (Math.PI * 2);
-          const limiterRange = this.profile.redlineRpm - this.profile.limiterStartRpm;
-          this.rpm = this.profile.limiterStartRpm
-            + (limiterRange * (1 + Math.sin(this.limiterPhase))) / 2;
-        } else {
-          const torqueRatio = this.torqueNm / this.profile.peakTorqueNm;
-          this.rpm = Math.min(
-            this.profile.redlineRpm,
-            this.rpm
-              + this.profile.neutralRpmRisePerSecond * torqueRatio * deltaSeconds,
-          );
-          if (this.rpm >= this.profile.redlineRpm) {
-            this.limiterActive = true;
-            this.limiterPhase = Math.PI / 2;
-            this.rpm = this.profile.redlineRpm;
-          }
-        }
-      } else if (this.limiterActive) {
-        const gear = this.profile.gears[this.gear - 1];
-        this.updateWheelSpin(deltaSeconds, gear.ratio, LIMITER_AVERAGE_TORQUE_FACTOR);
-        this.limiterPhase = (
-          this.limiterPhase + LIMITER_CYCLE_RADIANS_PER_SECOND * deltaSeconds
-        ) % (Math.PI * 2);
-        const limiterRange = this.profile.redlineRpm - this.profile.limiterStartRpm;
-        this.rpm = this.profile.limiterStartRpm
-          + (limiterRange * (1 + Math.sin(this.limiterPhase))) / 2;
-      } else {
-        const gear = this.profile.gears[this.gear - 1];
-        const torqueRatio = this.torqueNm / this.profile.peakTorqueNm;
-        this.updateWheelSpin(deltaSeconds, gear.ratio);
-        this.speedKph = Math.min(
-          gear.maxSpeedKph,
-          this.speedKph + gear.accelerationKphPerSecond * torqueRatio * deltaSeconds,
-        );
-        this.updateRpmFromSpeed();
-        if (this.speedKph >= gear.maxSpeedKph) {
-          this.limiterActive = true;
-          this.limiterPhase = Math.PI / 2;
-          this.rpm = this.profile.redlineRpm;
+    // --- Tire contact ---
+    const tires = p.tires;
+    const normalLoad = p.massKg * GRAVITY * p.drivenAxleWeightRatio;
+    const staticTraction = tires.baseGripCoefficient * this.gripMultiplier * normalLoad;
+    const kineticTraction = staticTraction * tires.kineticGripRatio;
+    const resistance = this.getResistanceForce(input);
+    const efficiency = p.drivetrainEfficiency;
+    const wheelMass = p.drivenWheelEquivalentMassKg;
+
+    let tireForce: number;
+    let wheelAcceleration: number;
+    let vehicleAcceleration: number;
+
+    if (inGear && this.clutchLocked) {
+      // Engine and wheels rotate together.
+      const engineMassAtWheel = p.engineInertiaKgM2 * (totalRatio / radius) ** 2;
+      const driveForce = (engineTorque * totalRatio * efficiency) / radius;
+      const result = this.solveTire(
+        driveForce,
+        wheelMass + engineMassAtWheel,
+        resistance,
+        staticTraction,
+        kineticTraction,
+        input.holdVehicle,
+      );
+      tireForce = result.tireForce;
+      wheelAcceleration = result.wheelAcceleration;
+      vehicleAcceleration = result.vehicleAcceleration;
+    } else {
+      const driveForce = (clutchTorque * totalRatio * efficiency) / radius;
+      const result = this.solveTire(
+        driveForce,
+        wheelMass,
+        resistance,
+        staticTraction,
+        kineticTraction,
+        input.holdVehicle,
+      );
+      tireForce = result.tireForce;
+      wheelAcceleration = result.wheelAcceleration;
+      vehicleAcceleration = result.vehicleAcceleration;
+
+      const previousEngineRad = this.engineSpeedRad;
+      this.engineSpeedRad += ((engineTorque - clutchTorque) / p.engineInertiaKgM2) * dt;
+      if (inGear) {
+        const nextCoupled = ((this.wheelSurfaceSpeedMps + wheelAcceleration * dt) / radius)
+          * totalRatio;
+        const crossed = Math.sign(previousEngineRad - coupledEngineRad)
+          !== Math.sign(this.engineSpeedRad - nextCoupled);
+        if ((crossed || Math.abs(this.engineSpeedRad - nextCoupled) < CLUTCH_SYNC_EPSILON_RAD)
+          && nextCoupled >= idleRad) {
+          this.clutchLocked = true;
         }
       }
+    }
 
-      if (this.gear > 0 && this.wheelSpinSpeedKph > 0) {
-        this.releaseRampSeconds = 0;
-        const warmupProgress = this.wheelSpinSpeedKph / WARMUP_MAX_SLIP_SPEED_KPH;
-        const progressiveWarmup = Phaser.Math.Clamp(warmupProgress, 0, 1) ** 2;
-        this.tireWarmup = Math.min(
-          100,
-          this.tireWarmup + WARMUP_MAX_RISE_PER_SECOND * progressiveWarmup * deltaSeconds,
-        );
-      } else {
-        const releaseTimeBeforeUpdate = this.releaseRampSeconds;
-        this.releaseRampSeconds = Math.min(
-          WARMUP_RATE_RAMP_SECONDS,
-          this.releaseRampSeconds + deltaSeconds,
-        );
-        this.coolTires(releaseTimeBeforeUpdate, deltaSeconds);
+    // --- Integrate ---
+    const slipBefore = this.wheelSurfaceSpeedMps - this.velocityMps;
+    this.velocityMps = input.holdVehicle
+      ? 0
+      : Math.max(0, this.velocityMps + vehicleAcceleration * dt);
+    this.wheelSurfaceSpeedMps = Math.max(0, this.wheelSurfaceSpeedMps + wheelAcceleration * dt);
+    const slipAfter = this.wheelSurfaceSpeedMps - this.velocityMps;
+
+    // The tire regained grip during this step (slip crossed zero): roll together.
+    const slipCrossedZero = Math.abs(slipBefore) >= SLIP_EPSILON_MPS
+      && Math.sign(slipBefore) !== Math.sign(slipAfter);
+    if (slipCrossedZero
+      || (Math.abs(slipAfter) < SLIP_EPSILON_MPS && Math.abs(tireForce) < staticTraction)) {
+      this.wheelSurfaceSpeedMps = this.velocityMps;
+    }
+
+    if (inGear && this.clutchLocked) {
+      this.engineSpeedRad = (this.wheelSurfaceSpeedMps / radius) * totalRatio;
+    }
+    this.engineSpeedRad = Math.max(idleRad, this.engineSpeedRad);
+
+    this.distanceMeters += this.velocityMps * dt;
+    this.updateTireWarmup(dt, tires);
+  }
+
+  /**
+   * Splits the drive force between the wheel and the car body.
+   * Returns the force transmitted by the tire and both accelerations.
+   */
+  private solveTire(
+    driveForce: number,
+    wheelSideMass: number,
+    resistance: number,
+    staticTraction: number,
+    kineticTraction: number,
+    holdVehicle: boolean,
+  ): { tireForce: number; wheelAcceleration: number; vehicleAcceleration: number } {
+    const slip = this.wheelSurfaceSpeedMps - this.velocityMps;
+    const bodyMass = this.profile.massKg;
+
+    if (Math.abs(slip) < SLIP_EPSILON_MPS && !holdVehicle) {
+      // Try rolling without slip: wheel and body accelerate together.
+      const commonAcceleration = (driveForce - resistance) / (bodyMass + wheelSideMass);
+      const requiredTireForce = driveForce - wheelSideMass * commonAcceleration;
+      if (Math.abs(requiredTireForce) <= staticTraction) {
+        return {
+          tireForce: requiredTireForce,
+          wheelAcceleration: commonAcceleration,
+          vehicleAcceleration: commonAcceleration,
+        };
       }
+    }
+
+    if (Math.abs(slip) < SLIP_EPSILON_MPS && holdVehicle && Math.abs(driveForce) <= staticTraction) {
+      // Held car and the tire still grips: nothing moves.
+      return { tireForce: driveForce, wheelAcceleration: 0, vehicleAcceleration: 0 };
+    }
+
+    // Wheel slips: the tire transmits kinetic friction against the slip direction.
+    const slipDirection = slip !== 0 ? Math.sign(slip) : Math.sign(driveForce);
+    const tireForce = kineticTraction * slipDirection;
+    return {
+      tireForce,
+      wheelAcceleration: (driveForce - tireForce) / wheelSideMass,
+      vehicleAcceleration: (tireForce - resistance) / bodyMass,
+    };
+  }
+
+  private getResistanceForce(input: EngineInput): number {
+    const p = this.profile;
+    if (this.velocityMps <= 0) {
+      return 0;
+    }
+
+    const rolling = p.rollingResistanceCoefficient * p.massKg * GRAVITY;
+    const aero = 0.5 * AIR_DENSITY * p.dragAreaM2 * this.velocityMps ** 2;
+    const brake = input.brake && !input.holdVehicle ? p.brakeDecelerationMps2 * p.massKg : 0;
+    return rolling + aero + brake;
+  }
+
+  private updateTireWarmup(dt: number, tires: TireProfile): void {
+    if (this.lockedGripMultiplier !== undefined) {
       return;
     }
 
-    if (this.throttleWasPressed) {
-      this.releaseRampSeconds = 0;
-      this.throttleWasPressed = false;
-    }
-
-    const releaseTimeBeforeUpdate = this.releaseRampSeconds;
-    this.releaseRampSeconds = Math.min(
-      WARMUP_RATE_RAMP_SECONDS,
-      this.releaseRampSeconds + deltaSeconds,
-    );
-
-    this.limiterActive = false;
-    this.recoverWheelSpin(deltaSeconds);
-    this.speedKph = Math.max(
-      0,
-      this.speedKph - (brakePressed
-        ? this.profile.brakeDecelerationKphPerSecond
-        : this.profile.coastDecelerationKphPerSecond) * deltaSeconds,
-    );
-    if (this.gear === 0) {
-      this.rpm = Math.max(
-        this.profile.idleRpm,
-        this.rpm - this.profile.neutralRpmFallPerSecond * deltaSeconds,
+    const slipKph = Math.min(this.wheelSpinSpeedKph, tires.maxHeatingSlipKph);
+    if (slipKph > 0.5) {
+      this.tireWarmup = Math.min(
+        100,
+        this.tireWarmup + tires.warmupPerSlipKphPerSecond * slipKph * dt,
       );
     } else {
-      this.updateRpmFromSpeed();
+      this.tireWarmup = Math.max(
+        0,
+        this.tireWarmup - this.tireWarmup * tires.coolingRatePerSecond * dt,
+      );
     }
-    this.coolTires(releaseTimeBeforeUpdate, deltaSeconds);
+  }
+}
+
+export function getGripMultiplier(tires: TireProfile, warmup: number): number {
+  const curve = tires.warmupGripCurve;
+  if (warmup <= curve[0].warmup) {
+    return curve[0].gripMultiplier;
   }
 
-  private coolTires(previousReleaseTime: number, deltaSeconds: number): void {
-    const rampDuration = Math.min(
-      deltaSeconds,
-      Math.max(0, WARMUP_RATE_RAMP_SECONDS - previousReleaseTime),
-    );
-    const rampEnd = previousReleaseTime + rampDuration;
-    const rampedCoolingSeconds = ((previousReleaseTime + rampEnd) / 2) * rampDuration;
-    const fullRateCoolingSeconds = deltaSeconds - rampDuration;
-    const effectiveCoolingSeconds = rampedCoolingSeconds + fullRateCoolingSeconds;
-    if (effectiveCoolingSeconds <= 0) {
-      return;
+  for (let index = 1; index < curve.length; index += 1) {
+    const upper = curve[index];
+    if (warmup <= upper.warmup) {
+      const lower = curve[index - 1];
+      const progress = (warmup - lower.warmup) / (upper.warmup - lower.warmup);
+      return interpolate(lower.gripMultiplier, upper.gripMultiplier, progress);
     }
-
-    this.tireWarmup = Math.max(
-      WARMUP_MIN_VALUE,
-      this.tireWarmup - WARMUP_FALL_PER_SECOND * effectiveCoolingSeconds,
-    );
   }
 
-  private updateWheelSpin(
-    deltaSeconds: number,
-    gearRatio: number,
-    torqueFactor = 1,
-  ): void {
-    const wheelTorqueNm = this.torqueNm
-      * gearRatio
-      * this.profile.finalDriveRatio
-      * this.profile.drivetrainEfficiency
-      * torqueFactor;
-    const driveForceNewtons = wheelTorqueNm / this.profile.wheelRadiusMeters;
-    const drivenAxleLoadNewtons = this.profile.massKg
-      * GRAVITY_METERS_PER_SECOND_SQUARED
-      * this.profile.drivenAxleWeightRatio;
-    const tractionLimitNewtons = this.profile.tireGripCoefficient * drivenAxleLoadNewtons;
-    const excessForceNewtons = driveForceNewtons - tractionLimitNewtons;
+  return curve[curve.length - 1].gripMultiplier;
+}
 
-    if (excessForceNewtons <= 0) {
-      this.recoverWheelSpin(deltaSeconds);
-      return;
-    }
-
-    const slipAccelerationMetersPerSecondSquared = excessForceNewtons
-      / this.profile.effectiveDrivenWheelMassKg;
-    const slipAccelerationKphPerSecond = slipAccelerationMetersPerSecondSquared * 3.6;
-    this.wheelSpinSpeedKph = Math.min(
-      MAX_WHEEL_SLIP_SPEED_KPH,
-      this.wheelSpinSpeedKph + slipAccelerationKphPerSecond * deltaSeconds,
-    );
-  }
-
-  private recoverWheelSpin(deltaSeconds: number): void {
-    const drivenAxleLoadNewtons = this.profile.massKg
-      * GRAVITY_METERS_PER_SECOND_SQUARED
-      * this.profile.drivenAxleWeightRatio;
-    const tractionLimitNewtons = this.profile.tireGripCoefficient * drivenAxleLoadNewtons;
-    const recoveryKphPerSecond = (
-      tractionLimitNewtons / this.profile.effectiveDrivenWheelMassKg
-    ) * 3.6;
-    this.wheelSpinSpeedKph = Math.max(
-      0,
-      this.wheelSpinSpeedKph - recoveryKphPerSecond * deltaSeconds,
-    );
-  }
-
-  private updateRpmFromSpeed(): void {
-    if (this.gear === 0) {
-      return;
-    }
-
-    const gear = this.profile.gears[this.gear - 1];
-    this.rpm = Math.max(
-      this.profile.idleRpm,
-      Math.min(this.profile.redlineRpm, (this.speedKph / gear.maxSpeedKph) * this.profile.redlineRpm),
-    );
-  }
+export function getTopSpeedKph(profile: CarEngineProfile): number {
+  const topGear = profile.gears[profile.gears.length - 1];
+  const wheelRad = (profile.redlineRpm * RPM_TO_RAD) / (topGear.ratio * profile.finalDriveRatio);
+  return wheelRad * profile.wheelRadiusMeters * MPS_TO_KPH;
 }
 
 export function getTorqueAtRpm(profile: CarEngineProfile, rpm: number): number {
@@ -300,6 +386,9 @@ export function getPowerHpAtRpm(profile: CarEngineProfile, rpm: number): number 
 }
 
 function interpolate(from: number, to: number, progress: number): number {
-  const clampedProgress = Math.max(0, Math.min(1, progress));
-  return from + (to - from) * clampedProgress;
+  return from + (to - from) * clamp01(progress);
+}
+
+function clamp01(value: number): number {
+  return Math.max(0, Math.min(1, value));
 }

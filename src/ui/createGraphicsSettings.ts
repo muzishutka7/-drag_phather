@@ -8,6 +8,7 @@ import { createUiText } from './createUiText';
 import { createLanguageSelector } from './createLanguageSelector';
 import { createRenderResolutionSelector, type RenderResolutionSelector } from './createRenderResolutionSelector';
 import { createFrameRateSelector } from './createFrameRateSelector';
+import { createSoundVolumeSelector } from './createSoundVolumeSelector';
 
 export interface GraphicsSettings {
   container: Phaser.GameObjects.Container;
@@ -30,7 +31,7 @@ export function createGraphicsSettings(
   const root = scene.add.container(x, y);
   const buttonSize = 48 * scale;
   const panelWidth = Math.min(360 * scale, scene.scale.width - 24 * scale);
-  const panelHeight = 266 * scale;
+  const panelHeight = 312 * scale;
 
   const button = scene.add.container(0, 0);
   button.add(
@@ -58,13 +59,13 @@ export function createGraphicsSettings(
       .setStrokeStyle(1.5 * scale, palette.trackBorder),
   );
   panel.add(
-    createUiText(scene, 0, -panelHeight * 0.37, 'settingsTitle', 'settingsTitle', scale),
+    createUiText(scene, 0, -panelHeight * 0.4, 'settingsTitle', 'settingsTitle', scale),
   );
 
   const closeButton = createUiText(
     scene,
     panelWidth / 2 - 18 * scale,
-    -panelHeight * 0.41,
+    -panelHeight * 0.43,
     'settingsClose',
     'settingsClose',
     scale,
@@ -79,7 +80,7 @@ export function createGraphicsSettings(
   const qualitySelector = createGraphicsQualitySelector(
     scene,
     0,
-    -panelHeight * 0.28,
+    -panelHeight * 0.27,
     scale,
     onQualityChange,
   );
@@ -87,27 +88,28 @@ export function createGraphicsSettings(
   const resolutionSelector = createRenderResolutionSelector(
     scene,
     0,
-    -panelHeight * 0.08,
+    -panelHeight * 0.1,
     scale,
     onResolutionChange,
   );
   panel.add(resolutionSelector.container);
-  panel.add(createFrameRateSelector(scene, 0, panelHeight * 0.12, scale));
+  panel.add(createFrameRateSelector(scene, 0, panelHeight * 0.07, scale));
   panel.add(
     createUiText(
       scene,
       0,
-      panelHeight * 0.24,
+      panelHeight * 0.17,
       'frameRateRestartHint',
       'qualityLabel',
       scale,
     ),
   );
+  panel.add(createSoundVolumeSelector(scene, 0, panelHeight * 0.28, scale));
   panel.add(
     createLanguageSelector(
       scene,
       0,
-      panelHeight * 0.39,
+      panelHeight * 0.41,
       scale,
       onLocaleChange,
     ),

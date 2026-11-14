@@ -258,8 +258,12 @@ export class IntroScene extends Phaser.Scene {
 
   private cancelRaceTransition(): void {
     this.isTransitioning = false;
-    this.tweens.killTweensOf(this.raceButton);
-    this.tweens.killTweensOf(this.titleText);
+    if (this.raceButton) {
+      this.tweens.killTweensOf(this.raceButton);
+    }
+    if (this.titleText) {
+      this.tweens.killTweensOf(this.titleText);
+    }
     this.raceButton?.setAlpha(1).setScale(1).setInteractive();
     this.titleText?.setAlpha(1).setScale(1);
     this.graphicsSettings?.setEnabled(true);
