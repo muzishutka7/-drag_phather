@@ -1,12 +1,17 @@
-export const frameRates = [30, 60] as const;
+export const frameRates = [30, 60, 120] as const;
 export type FrameRate = (typeof frameRates)[number];
 
 const STORAGE_KEY = 'drag-racing.frame-rate';
 const DEFAULT_FRAME_RATE: FrameRate = 60;
+const FRAME_RATE_BY_VALUE: Record<`${FrameRate}`, FrameRate> = {
+  30: 30,
+  60: 60,
+  120: 120,
+};
 let inMemoryFrameRate: FrameRate | undefined;
 
 function isFrameRate(value: string | null): value is `${FrameRate}` {
-  return value === '30' || value === '60';
+  return value === '30' || value === '60' || value === '120';
 }
 
 export function getFrameRate(): FrameRate {
@@ -21,7 +26,7 @@ export function getFrameRate(): FrameRate {
   try {
     const savedFrameRate = window.localStorage.getItem(STORAGE_KEY);
     if (isFrameRate(savedFrameRate)) {
-      return savedFrameRate === '30' ? 30 : 60;
+      return FRAME_RATE_BY_VALUE[savedFrameRate];
     }
 
     return DEFAULT_FRAME_RATE;

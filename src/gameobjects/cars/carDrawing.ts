@@ -7,6 +7,7 @@ export interface CarOptions {
   y: number;
   color: number;
   scale: number;
+  drawWheels?: boolean;
 }
 
 export function fillPolygon(
@@ -38,4 +39,9 @@ export function drawWheel(
   graphics.fillCircle(x, y, radius * 0.65);
   graphics.fillStyle(palette.wheelCenter);
   graphics.fillCircle(x, y, radius * 0.32);
+
+  graphics.fillStyle(0xf3f5f7, 0.95);
+  graphics.fillCircle(x + radius * 0.1, y - radius * 0.82, radius * 0.09);
+  graphics.fillCircle(x + radius * 0.78, y + radius * 0.28, radius * 0.09);
+  graphics.fillCircle(x - radius * 0.52, y + radius * 0.62, radius * 0.09);
 }

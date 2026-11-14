@@ -1,3 +1,5 @@
+import { Capacitor } from '@capacitor/core';
+
 export const renderResolutions = ['low', 'medium', 'high'] as const;
 export type RenderResolution = (typeof renderResolutions)[number];
 
@@ -48,5 +50,9 @@ export function setRenderResolution(resolution: RenderResolution): void {
 }
 
 export function getRenderResolutionScale(resolution = getRenderResolution()): number {
-  return RESOLUTION_SCALE[resolution];
+  const nativePixelRatio = Capacitor.isNativePlatform() && typeof window !== 'undefined'
+    ? Math.min(window.devicePixelRatio || 1, 3)
+    : 1;
+
+  return RESOLUTION_SCALE[resolution] * nativePixelRatio;
 }

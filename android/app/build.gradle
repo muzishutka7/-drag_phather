@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+def appVersion = new Properties()
+file('version.properties').withInputStream { appVersion.load(it) }
+
 android {
     namespace "com.muzishutka7.dragracing2d"
     compileSdk rootProject.ext.compileSdkVersion
@@ -7,8 +10,8 @@ android {
         applicationId "com.muzishutka7.dragracing2d"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersion.getProperty('VERSION_CODE').toInteger()
+        versionName appVersion.getProperty('VERSION_NAME')
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

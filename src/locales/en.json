@@ -12,6 +12,7 @@
   "frameRateSetting": "FPS",
   "frameRate30": "30",
   "frameRate60": "60",
+  "frameRate120": "120",
   "frameRateRestartHint": "RESTART TO APPLY",
   "languageSetting": "LANGUAGE",
   "languageEnglish": "EN",

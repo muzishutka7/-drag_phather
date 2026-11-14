@@ -9,11 +9,14 @@ export function createSportsCoupe({
   y,
   color,
   scale,
+  drawWheels = true,
 }: CarOptions): Phaser.GameObjects.Graphics {
   const graphics = scene.add.graphics().setPosition(x, y).setScale(scale).setName('sports-coupe');
 
-  drawWheel(graphics, -70, 19, 20);
-  drawWheel(graphics, 72, 19, 20);
+  if (drawWheels) {
+    drawWheel(graphics, -70, 19, 20);
+    drawWheel(graphics, 72, 19, 20);
+  }
 
   fillPolygon(graphics, [
     new Phaser.Geom.Point(-125, 12),

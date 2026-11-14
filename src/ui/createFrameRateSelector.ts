@@ -8,6 +8,12 @@ import {
 } from '../settings/frameRate';
 import { createUiText } from './createUiText';
 
+const frameRateLabels: Record<FrameRate, 'frameRate30' | 'frameRate60' | 'frameRate120'> = {
+  30: 'frameRate30',
+  60: 'frameRate60',
+  120: 'frameRate120',
+};
+
 export function createFrameRateSelector(
   scene: Phaser.Scene,
   x: number,
@@ -61,7 +67,7 @@ export function createFrameRateSelector(
       scene,
       optionX,
       0,
-      frameRate === 30 ? 'frameRate30' : 'frameRate60',
+      frameRateLabels[frameRate],
       'frameRateOption',
       scale,
     );

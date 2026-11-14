@@ -54,7 +54,7 @@ export function createGraphicsSettings(
     buttonSize / 2 + 12 * scale + panelHeight / 2,
   );
   panel.add(
-    scene.add.rectangle(0, 0, panelWidth, panelHeight, palette.track, 0.97)
+    scene.add.rectangle(0, 0, panelWidth, panelHeight, palette.background, 1)
       .setStrokeStyle(1.5 * scale, palette.trackBorder),
   );
   panel.add(
