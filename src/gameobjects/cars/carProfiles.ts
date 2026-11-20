@@ -5,6 +5,10 @@ export interface EngineTorquePoint {
 
 export type Drivetrain = 'front-wheel' | 'rear-wheel' | 'all-wheel';
 
+/**
+ * Gear speed limits are not configured by hand: they follow from the ratio,
+ * final drive, wheel radius and redline (see getGearMaxSpeedKph in raceEngine).
+ */
 export interface TransmissionGear {
   ratio: number;
 }
@@ -29,6 +33,19 @@ export interface TireProfile {
   maxHeatingSlipKph: number;
   /** Fraction of the current warmup lost per second when the tire is not slipping. */
   coolingRatePerSecond: number;
+}
+
+export interface EngineWearProfile {
+  /** Health lost per second while bouncing on the rev limiter (%). */
+  limiterWearPerSecond: number;
+  /**
+   * Health lost per second when the engine is forced past the redline
+   * (e.g. a too-early downshift), at 1000 rpm over. Grows with the square
+   * of the over-rev: 2000 rpm over wears 4× faster.
+   */
+  overRevWearPerSecondAt1000Rpm: number;
+  /** Share of power left when health reaches 0 %. */
+  minPowerFactor: number;
 }
 
 export interface CarEngineProfile {
@@ -74,11 +91,12 @@ export interface CarEngineProfile {
   /** Deceleration produced by full braking (m/s²). */
   brakeDecelerationMps2: number;
   tires: TireProfile;
+  engineWear: EngineWearProfile;
   torqueCurve: readonly EngineTorquePoint[];
 }
 
 export const STREET_TIRE: TireProfile = {
-  name: 'Street 185/60 R14',
+  name: 'Street 175/70 R13',
   baseGripCoefficient: 0.85,
   kineticGripRatio: 0.82,
   warmupGripCurve: [
@@ -108,6 +126,8 @@ export const STARTER_COUPE_PROFILE = {
   drivetrain: 'front-wheel',
   idleRpm: 900,
   redlineRpm: 6_000,
+  // Factory data: 86 PS (85 hp) @ 5800 rpm, 130 Nm @ 3400 rpm,
+  // 0–100 km/h 12.5 s, top speed 172 km/h, curb weight 1035 kg, tyres 175/70 R13.
   peakPowerHp: 85,
   peakPowerRpm: 5_800,
   peakTorqueNm: 130,
@@ -118,8 +138,10 @@ export const STARTER_COUPE_PROFILE = {
   clutchMaxTorqueNm: 260,
   clutchFullEngageRpm: 3_500,
   shiftTimeSeconds: 0.25,
-  massKg: 1_130,
+  // Curb weight 1035 kg + 75 kg driver.
+  massKg: 1_110,
   drivenAxleWeightRatio: 0.62,
+  // 175/70 R13: 288 mm unloaded, ~285 mm rolling radius.
   wheelRadiusMeters: 0.285,
   drivetrainEfficiency: 0.88,
   drivenWheelEquivalentMassKg: 30,
@@ -131,10 +153,16 @@ export const STARTER_COUPE_PROFILE = {
     { ratio: 0.971 },
     { ratio: 0.763 },
   ],
-  dragAreaM2: 0.66,
+  // Cd ≈ 0.34 × frontal area ≈ 2.04 m² (1678 mm wide, 1432 mm high).
+  dragAreaM2: 0.69,
   rollingResistanceCoefficient: 0.013,
   brakeDecelerationMps2: 8,
   tires: STREET_TIRE,
+  engineWear: {
+    limiterWearPerSecond: 0.05,
+    overRevWearPerSecondAt1000Rpm: 4,
+    minPowerFactor: 0.6,
+  },
   torqueCurve: [
     { rpm: 900, torqueNm: 80 },
     { rpm: 1_500, torqueNm: 93 },

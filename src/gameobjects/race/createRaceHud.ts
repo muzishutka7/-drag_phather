@@ -12,9 +12,14 @@ const AMBER_ON = 0xffb22e;
 const LIGHT_OFF = 0x2b3134;
 const GREEN_ON = 0x37e06a;
 
+export interface EngineHudState {
+  /** 0..100 % */
+  health: number;
+}
+
 export interface RaceHud {
   container: Phaser.GameObjects.Container;
-  update: (session: RaceSession) => void;
+  update: (session: RaceSession, engine: EngineHudState) => void;
   layout: (width: number, height: number, layoutScale: number) => void;
   destroy: () => void;
 }
@@ -67,7 +72,7 @@ export function createRaceHud(
     fontStyle: 'normal',
     lineSpacing: 4,
   }).setOrigin(0.5);
-  resultPanel.add(createPanelBackground(scene, 460, 340));
+  resultPanel.add(createPanelBackground(scene, 460, 360));
   resultPanel.add([resultTitle, resultBody]);
   resultPanel.add(createButton(scene, -110, 125, 200, 50, t('raceRetry'), onRetry));
   resultPanel.add(createButton(scene, 110, 125, 200, 50, t('raceGarage'), onGarage));
@@ -106,7 +111,7 @@ export function createRaceHud(
 
   return {
     container,
-    update: (session) => {
+    update: (session, engine) => {
       const phase = session.phase;
       choosePanel.setVisible(phase === 'choose-distance');
       resultPanel.setVisible(phase === 'finished');
@@ -139,7 +144,7 @@ export function createRaceHud(
 
       const result = session.result;
       if (phase === 'finished' && result) {
-        const key = `${result.distanceMeters}-${result.elapsedSeconds}`;
+        const key = `${result.distanceMeters}-${result.elapsedSeconds}-${Math.floor(engine.health)}`;
         if (key !== lastResultKey) {
           lastResultKey = key;
           resultTitle.setText(`${t('raceFinished')} · ${result.distanceMeters} m`);
@@ -152,6 +157,7 @@ export function createRaceHud(
             `${t('raceTrapSpeed')}: ${result.trapSpeedKph.toFixed(1)} km/h`,
             `0–100 km/h: ${zeroToHundred}`,
             `${t('raceGrip')}: ×${result.gripMultiplier.toFixed(2)} (${Math.round(result.tireWarmup)}%)`,
+            `${t('raceEngine')}: ${Math.floor(engine.health)}%`,
           ].join('\n'));
         }
       } else {

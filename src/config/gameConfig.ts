@@ -21,6 +21,10 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
     target: 60,
     limit: getFrameRate(),
   },
+  input: {
+    // Gas pedal + shift paddle (+ brake) at the same time on touch screens.
+    activePointers: 4,
+  },
   scene: [BootScene, IntroScene, GarageScene, PartsStoreScene, RaceScene],
   scale: {
     mode: Phaser.Scale.NONE,

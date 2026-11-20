@@ -15,15 +15,18 @@ import {
 import { RaceAudio } from '../../audio/raceAudio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/gameConfig';
 import { palette } from '../../config/palette';
-import { drawWheel } from '../../gameobjects/cars/carDrawing';
-import { createSportsCoupe } from '../../gameobjects/cars/createSportsCoupe';
+import { preloadVehicleAssets } from '../../assets/vehicleAssets';
+import { getCarVisualParts, LANOS_VISUAL } from '../../gameobjects/cars/carVisuals';
+import { createCarModel, type CarModel } from '../../gameobjects/cars/createCarModel';
 import { createRaceControls, type RaceControls } from '../../gameobjects/race/createRaceControls';
 import { createRaceHud, type RaceHud } from '../../gameobjects/race/createRaceHud';
+import { createSpeedLcd, type SpeedLcd } from '../../gameobjects/race/createSpeedLcd';
+import { createTireEffects, type TireEffects } from '../../gameobjects/race/createTireEffects';
 import {
   createTireWarmupGauge,
   type TireWarmupGauge,
 } from '../../gameobjects/race/createTireWarmupGauge';
-import { RaceEngine, type DrivenAxle } from '../../gameobjects/race/raceEngine';
+import { RaceEngine } from '../../gameobjects/race/raceEngine';
 import { RaceSession } from '../../gameobjects/race/raceSession';
 import {
   getGraphicsQuality,
@@ -32,6 +35,8 @@ import {
 } from '../../settings/graphicsQuality';
 import { getRenderResolution, getRenderResolutionScale } from '../../settings/renderResolution';
 import { createGraphicsSettings, type GraphicsSettings } from '../../ui/createGraphicsSettings';
+import { getEngineHealth, setEngineHealth } from '../../state/engineHealth';
+import { createCheckEngineIcon, type CheckEngineIcon } from '../../ui/createCheckEngineIcon';
 import { createGarageBackButton } from '../GarageScene/components/createGarageBackButton';
 
 const BACKGROUND_NAME: BackgroundName = 'race-panorama';
@@ -45,14 +50,11 @@ const ROAD_LANE_DIVIDER = 109;
 const ROAD_LOWER_EDGE = 188;
 const ROAD_LANE = 'upper';
 const CAR_POSITION_X = 276;
-const CAR_WHEEL_BOTTOM = 39;
-const CAR_LANE_VERTICAL_OFFSET = 34;
-const CAR_SCALE = 1.1;
-const CAR_WHEELS = [
-  { axle: 'rear', x: -70, y: 19 },
-  { axle: 'front', x: 72, y: 19 },
-] as const satisfies ReadonlyArray<{ axle: DrivenAxle; x: number; y: number }>;
-const WHEEL_RADIUS = 20;
+/** Lifts the car from the lane line into the middle of the upper lane (layout px). */
+const CAR_LANE_VERTICAL_OFFSET = 37;
+const CAR_SCALE = 1.32;
+/** On-screen car length at CAR_SCALE 1 (960×540 layout pixels). */
+const CAR_LENGTH_PX = 250;
 /** Visual cap so fast wheels do not strobe. */
 const MAX_WHEEL_ANGULAR_VELOCITY = Math.PI * 10;
 /** How many screen pixels (at 960×540 layout) one meter of track takes. */
@@ -60,6 +62,33 @@ const PIXELS_PER_METER = 28;
 /** Distance from the car origin to its front bumper, in car-local pixels. */
 const CAR_FRONT_OFFSET = 124;
 const BACKGROUND_PARALLAX = 0.08;
+/**
+ * Check-engine light on the tachometer face, below the needle hub
+ * (cluster-local pixels; the tachometer center is at -206, -236).
+ */
+const CHECK_ENGINE_POSITION = { x: -202, y: -160 };
+const CHECK_ENGINE_SCALE = 1.1;
+/**
+ * Outline of the empty gap at the bottom between the tachometer and the
+ * speedometer (cluster-local pixels, traced from the dashboard artwork and
+ * widened a little so the gauge rims cover its edges).
+ */
+const GEAR_GAP_OUTLINE: ReadonlyArray<[number, number]> = [
+  [-38, -173], [-30, -165], [-29, -157], [-25, -149], [-21, -141], [-17, -133],
+  [-13, -125], [-9, -117], [-7, -109], [-1, -101], [7, -93], [11, -85], [21, -77],
+  [25, -69], [34, -61], [120, 0], [-160, 0], [-152, -61], [-132, -69], [-118, -77],
+  [-107, -85], [-96, -93], [-86, -101], [-79, -109], [-72, -117], [-66, -125],
+  [-61, -133], [-55, -141], [-50, -149], [-46, -157], [-41, -165],
+];
+/** Gear number position in that gap (lower part of the screen hides about 78 px). */
+const GEAR_READOUT_POSITION = { x: -44, y: -110 };
+/** The empty light-grey window of the speedometer artwork (cluster-local pixels). */
+const SPEED_LCD = { x: 171, y: -124, width: 126, height: 42 };
+const SHIFT_LIGHT_OFF = 0x151918;
+const SHIFT_LIGHT_WARNING = 0xc98a12;
+const SHIFT_LIGHT_LIMITER = 0xc62f28;
+/** The shift light comes on this many rpm below the redline. */
+const SHIFT_LIGHT_WARNING_RPM = 400;
 const TACHOMETER_MAX_RPM = 9_000;
 const INSTRUMENT_POSITION = { x: 719.5, y: 568 };
 const INSTRUMENT_SCALE = 0.35826;
@@ -83,10 +112,14 @@ export class RaceScene extends Phaser.Scene {
   private uiContainer?: Phaser.GameObjects.Container;
   private backButton?: Phaser.GameObjects.Container;
   private carContainer?: Phaser.GameObjects.Container;
-  private wheels: Array<{ axle: DrivenAxle; image: Phaser.GameObjects.Graphics }> = [];
+  private carModel?: CarModel;
+  private tireEffects?: TireEffects;
   private engine = new RaceEngine();
   private session = new RaceSession(this.engine);
   private hud?: RaceHud;
+  private savedEngineHealth = 100;
+  private checkEngineIcon?: CheckEngineIcon;
+  private speedLcd?: SpeedLcd;
   private warmupGauge?: TireWarmupGauge;
   private trackMarks?: Phaser.GameObjects.Graphics;
   private audio?: RaceAudio;
@@ -99,6 +132,8 @@ export class RaceScene extends Phaser.Scene {
   private speedNeedle?: Phaser.GameObjects.Image;
   private tachometerNeedle?: Phaser.GameObjects.Image;
   private gearReadout?: Phaser.GameObjects.Text;
+  private gearReadoutBackground?: Phaser.GameObjects.Graphics;
+  private gearReadoutColor = -1;
 
   constructor() {
     super('RaceScene');
@@ -107,7 +142,9 @@ export class RaceScene extends Phaser.Scene {
   init(): void {
     this.isBackgroundLoading = false;
     this.session.restart();
-    this.wheels = [];
+    this.engine.engineHealth = getEngineHealth(this.engine.profile.id);
+    this.savedEngineHealth = this.engine.engineHealth;
+    this.carModel = undefined;
     this.drivenWheelRotation = 0;
     this.freeWheelRotation = 0;
     this.soundEvents = { countdown: -1, amber: 0, green: false, phase: '', gear: 0 };
@@ -117,6 +154,7 @@ export class RaceScene extends Phaser.Scene {
     this.activeQuality = getGraphicsQuality();
     this.backgroundKey = preloadBackground(this, BACKGROUND_NAME, this.activeQuality);
     this.raceAssetKeys = preloadRaceAssets(this, this.activeQuality);
+    preloadVehicleAssets(this, getCarVisualParts(LANOS_VISUAL), this.activeQuality);
   }
 
   create(): void {
@@ -132,6 +170,9 @@ export class RaceScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
       this.raceControls?.destroy();
       this.hud?.destroy();
+      this.tireEffects?.destroy();
+      this.tireEffects = undefined;
+      this.saveEngineHealth(true);
       this.audio?.destroy();
       this.audio = undefined;
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
@@ -149,7 +190,10 @@ export class RaceScene extends Phaser.Scene {
     this.session.update(delta, { throttle, brake });
 
     const phase = this.session.phase;
-    this.hud?.update(this.session);
+    this.hud?.update(this.session, { health: this.engine.engineHealth });
+    this.speedLcd?.update(this.engine.speedKph);
+    this.checkEngineIcon?.update(this.engine.engineHealth, this.engine.isOverRevving, this.time.now);
+    this.saveEngineHealth(phase === 'finished');
     this.warmupGauge?.container.setVisible(phase === 'burnout' || phase === 'staging');
     this.warmupGauge?.update({
       warmup: this.engine.tireWarmup,
@@ -160,8 +204,10 @@ export class RaceScene extends Phaser.Scene {
 
     this.updateWheels(delta);
     this.updateTrack();
+    this.updateTireEffects(delta);
     this.updateSound();
     this.gearReadout?.setText(this.engine.gear === 0 ? 'N' : String(this.engine.gear));
+    this.updateShiftLight();
     const calibratedSpeedProgress = this.getSpeedometerProgress();
     this.speedNeedle?.setRotation(
       SPEEDOMETER_ZERO_ANGLE + SPEEDOMETER_SWEEP_RADIANS * calibratedSpeedProgress,
@@ -174,6 +220,48 @@ export class RaceScene extends Phaser.Scene {
       1,
     );
     this.tachometerNeedle?.setRotation(NEEDLE_START_ANGLE + Math.PI * rpmProgress);
+  }
+
+  /** Saves the engine condition when it changed noticeably (or when forced). */
+  private saveEngineHealth(force: boolean): void {
+    const health = this.engine.engineHealth;
+    if (health === this.savedEngineHealth || (!force && Math.abs(health - this.savedEngineHealth) < 0.5)) {
+      return;
+    }
+
+    setEngineHealth(this.engine.profile.id, health);
+    this.savedEngineHealth = health;
+  }
+
+  /** Gear box turns amber close to the redline and red on the rev limiter. */
+  private updateShiftLight(): void {
+    const engine = this.engine;
+    let color = SHIFT_LIGHT_OFF;
+    if (engine.gear > 0 && engine.limiterActive) {
+      color = SHIFT_LIGHT_LIMITER;
+    } else if (engine.gear > 0 && engine.rpm >= engine.profile.redlineRpm - SHIFT_LIGHT_WARNING_RPM) {
+      color = SHIFT_LIGHT_WARNING;
+    }
+    this.drawGearReadoutBackground(color);
+  }
+
+  /** Fills the gap between the gauges with the shift-light color. */
+  private drawGearReadoutBackground(color: number): void {
+    const background = this.gearReadoutBackground;
+    if (!background || color === this.gearReadoutColor) {
+      return;
+    }
+
+    this.gearReadoutColor = color;
+    background.clear();
+    background.fillStyle(color, 1);
+    background.beginPath();
+    background.moveTo(GEAR_GAP_OUTLINE[0][0], GEAR_GAP_OUTLINE[0][1]);
+    GEAR_GAP_OUTLINE.slice(1).forEach(([x, y]) => background.lineTo(x, y));
+    background.closePath();
+    background.fillPath();
+    background.lineStyle(4, 0x77817b, 0.95);
+    background.strokePath();
   }
 
   private updateSound(): void {
@@ -239,11 +327,44 @@ export class RaceScene extends Phaser.Scene {
     this.freeWheelRotation = advance(this.freeWheelRotation, this.engine.velocityMps);
 
     const drivetrain = this.engine.profile.drivetrain;
-    this.wheels.forEach(({ axle, image }) => {
+    (['front', 'rear'] as const).forEach((axle) => {
       const isDriven = drivetrain === 'all-wheel'
         || (drivetrain === 'front-wheel' && axle === 'front')
         || (drivetrain === 'rear-wheel' && axle === 'rear');
-      image.rotation = isDriven ? this.drivenWheelRotation : this.freeWheelRotation;
+      this.carModel?.setWheelRotation(
+        axle,
+        isDriven ? this.drivenWheelRotation : this.freeWheelRotation,
+      );
+    });
+  }
+
+  /** Smoke and rubber marks from the driven wheels when they spin. */
+  private updateTireEffects(delta: number): void {
+    const car = this.carModel?.container;
+    if (!this.tireEffects || !car) {
+      return;
+    }
+
+    const { width, height } = this.scale;
+    const layoutScale = Math.min(width / GAME_WIDTH, height / GAME_HEIGHT);
+    const pxPerMm = car.scaleX;
+    const drivetrain = this.engine.profile.drivetrain;
+    const axles = [
+      ...(drivetrain !== 'front-wheel' ? [LANOS_VISUAL.rearAxle] : []),
+      ...(drivetrain !== 'rear-wheel' ? [LANOS_VISUAL.frontAxle] : []),
+    ];
+    this.tireEffects.update(delta, {
+      distanceMeters: this.engine.distanceMeters,
+      speedMps: this.engine.velocityMps,
+      wheelSlipKph: this.engine.wheelSpinSpeedKph,
+      tireWarmup: this.engine.tireWarmup,
+      wheels: axles.map((axle) => ({
+        screenX: car.x + (axle.x - LANOS_VISUAL.lengthMm / 2) * pxPerMm,
+        screenY: car.y,
+      })),
+      carFrontScreenX: (CAR_POSITION_X + CAR_FRONT_OFFSET * CAR_SCALE) * layoutScale,
+      trackPixelsPerMeter: PIXELS_PER_METER * layoutScale,
+      carPixelsPerMeter: pxPerMm * 1000,
     });
   }
 
@@ -426,22 +547,9 @@ export class RaceScene extends Phaser.Scene {
       return;
     }
 
-    this.carContainer = this.add.container(0, 0).setDepth(2);
-    CAR_WHEELS.forEach(({ axle, x, y }) => {
-      const wheel = this.add.graphics().setName(`${axle}-wheel`);
-      drawWheel(wheel, 0, 0, WHEEL_RADIUS);
-      wheel.setPosition(x, y);
-      this.carContainer?.add(wheel);
-      this.wheels.push({ axle, image: wheel });
-    });
-    this.carContainer.add(createSportsCoupe({
-      scene: this,
-      x: 0,
-      y: 0,
-      color: palette.sportsCoupe,
-      scale: 1,
-      drawWheels: false,
-    }).setName('car-body'));
+    // Layered car (body, suspension, brakes, tires, rims); origin on the ground.
+    this.carModel = createCarModel(this, LANOS_VISUAL, this.activeQuality);
+    this.carContainer = this.carModel.container.setDepth(2);
 
     this.instrumentContainer = this.add.container(0, 0)
       .setName('instrument-cluster')
@@ -450,12 +558,15 @@ export class RaceScene extends Phaser.Scene {
       .setName('dashboard-gauges')
       .setOrigin(0.5, 1)
       .setDepth(0);
-    const gearReadoutBackground = this.add.rectangle(-16, -418, 72, 76, 0x151918, 0.95)
-      .setName('gear-readout-background')
-      .setStrokeStyle(3, 0x77817b, 0.95);
-    this.gearReadout = this.add.text(-16, -418, 'N', {
+    // Gear number in the gap at the bottom between the two gauges. The filled
+    // gap sits under the dashboard artwork, so the gauge rims frame it.
+    const gearReadoutBackground = this.add.graphics().setName('gear-readout-background');
+    this.gearReadoutBackground = gearReadoutBackground;
+    this.gearReadoutColor = -1;
+    this.drawGearReadoutBackground(SHIFT_LIGHT_OFF);
+    this.gearReadout = this.add.text(GEAR_READOUT_POSITION.x, GEAR_READOUT_POSITION.y, 'N', {
       fontFamily: 'Arial, sans-serif',
-      fontSize: '64px',
+      fontSize: '56px',
       fontStyle: 'bold',
       color: '#f4f4ef',
       stroke: '#171a19',
@@ -466,12 +577,28 @@ export class RaceScene extends Phaser.Scene {
     this.speedNeedle = this.createNeedle('speedometer-needle');
     this.tachometerNeedle = this.createNeedle('tachometer-needle');
     this.instrumentContainer.add([
-      this.dashboardImage,
       gearReadoutBackground,
+      this.dashboardImage,
       this.speedNeedle,
       this.tachometerNeedle,
       this.gearReadout,
     ]);
+    // "CHECK" engine light printed on the tachometer face, under the needles.
+    this.checkEngineIcon = createCheckEngineIcon(this);
+    this.checkEngineIcon.container.setPosition(CHECK_ENGINE_POSITION.x, CHECK_ENGINE_POSITION.y)
+      .setScale(CHECK_ENGINE_SCALE);
+    this.instrumentContainer.addAt(
+      this.checkEngineIcon.container,
+      this.instrumentContainer.getIndex(this.speedNeedle),
+    );
+    // Calculator-style digital speed in the speedometer's empty window, under the needles.
+    this.speedLcd = createSpeedLcd(this, SPEED_LCD.width, SPEED_LCD.height);
+    this.speedLcd.container.setPosition(SPEED_LCD.x, SPEED_LCD.y);
+    this.speedLcd.update(0);
+    this.instrumentContainer.addAt(
+      this.speedLcd.container,
+      this.instrumentContainer.getIndex(this.speedNeedle),
+    );
     this.raceControls = createRaceControls(
       this,
       () => this.engine.shiftUp(),
@@ -479,6 +606,7 @@ export class RaceScene extends Phaser.Scene {
     );
     this.instrumentContainer.add(this.raceControls.container);
     this.trackMarks = this.add.graphics().setName('track-marks').setDepth(-0.5);
+    this.tireEffects = createTireEffects(this);
     this.warmupGauge = createTireWarmupGauge(this, this.engine.profile.tires);
     this.hud = createRaceHud(
       this,
@@ -509,10 +637,9 @@ export class RaceScene extends Phaser.Scene {
     this.carContainer
       ?.setPosition(
         CAR_POSITION_X * layoutScale,
-        wheelContactY
-          - (CAR_WHEEL_BOTTOM + CAR_LANE_VERTICAL_OFFSET) * CAR_SCALE * layoutScale,
+        wheelContactY - CAR_LANE_VERTICAL_OFFSET * layoutScale,
       )
-      .setScale(CAR_SCALE * layoutScale);
+      .setScale((CAR_LENGTH_PX * CAR_SCALE * layoutScale) / LANOS_VISUAL.lengthMm);
 
     const clusterX = INSTRUMENT_POSITION.x * layoutScale;
     const clusterY = INSTRUMENT_POSITION.y * layoutScale;

@@ -14,6 +14,10 @@ import {
 } from '../../settings/graphicsQuality';
 import { getRenderResolution, getRenderResolutionScale } from '../../settings/renderResolution';
 import { createGraphicsSettings, type GraphicsSettings } from '../../ui/createGraphicsSettings';
+import { preloadVehicleAssets } from '../../assets/vehicleAssets';
+import { STARTER_COUPE_PROFILE } from '../../gameobjects/cars/carProfiles';
+import { getCarVisualParts, LANOS_VISUAL } from '../../gameobjects/cars/carVisuals';
+import { createGarageCarDisplay, type GarageCarDisplay } from './components/createGarageCarDisplay';
 import { createPartsStoreButton } from './components/createPartsStoreButton';
 import { createRaceFlagButton } from './components/createRaceFlagButton';
 
@@ -36,6 +40,7 @@ export class GarageScene extends Phaser.Scene {
   private uiContainer?: Phaser.GameObjects.Container;
   private storeButton?: Phaser.GameObjects.Container;
   private raceButton?: Phaser.GameObjects.Container;
+  private carDisplay?: GarageCarDisplay;
 
   constructor() {
     super('GarageScene');
@@ -53,6 +58,7 @@ export class GarageScene extends Phaser.Scene {
   preload(): void {
     this.activeQuality = getGraphicsQuality();
     this.backgroundKey = preloadBackground(this, BACKGROUND_NAME, this.activeQuality);
+    preloadVehicleAssets(this, getCarVisualParts(LANOS_VISUAL), this.activeQuality);
   }
 
   create(): void {
@@ -71,6 +77,10 @@ export class GarageScene extends Phaser.Scene {
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
       window.removeEventListener('resize', this.handleViewportResize);
     });
+  }
+
+  update(time: number): void {
+    this.carDisplay?.update(time);
   }
 
   private handleViewportResize = (): void => {
@@ -135,6 +145,9 @@ export class GarageScene extends Phaser.Scene {
       () => this.scene.start('RaceScene'),
     );
     this.uiContainer.add(this.raceButton);
+
+    this.carDisplay = createGarageCarDisplay(this, width, height, scale, STARTER_COUPE_PROFILE);
+    this.uiContainer.add(this.carDisplay.container);
 
     this.graphicsSettings = createGraphicsSettings(
       this,

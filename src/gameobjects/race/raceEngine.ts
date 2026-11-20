@@ -28,6 +28,8 @@ const MAX_FRAME_SECONDS = 0.1;
 /** Slip below this (m/s) is treated as rolling without slip. */
 const SLIP_EPSILON_MPS = 0.05;
 const CLUTCH_SYNC_EPSILON_RAD = 2;
+/** Above this share of the redline the clutch slips instead of spinning the engine faster. */
+const MAX_OVERREV_FACTOR = 1.6;
 
 /**
  * Longitudinal drag car model.
@@ -51,6 +53,11 @@ export class RaceEngine {
   limiterActive = false;
   /** True while the engine is producing power (throttle on, not cut by the limiter). */
   firing = false;
+  /**
+   * Engine condition 0..100 %. Not touched by reset(): it carries over
+   * between races and is saved by the scene.
+   */
+  engineHealth = 100;
 
   private engineSpeedRad: number;
   private clutchLocked = false;
@@ -82,6 +89,17 @@ export class RaceEngine {
     return getPowerHpAtRpm(this.profile, this.rpm);
   }
 
+  /** Engine is spinning past the redline (mechanical over-rev). */
+  get isOverRevving(): boolean {
+    return this.rpm > this.profile.redlineRpm + 50;
+  }
+
+  /** Power left after wear, 0..1. */
+  get powerFactor(): number {
+    const { minPowerFactor } = this.profile.engineWear;
+    return minPowerFactor + (1 - minPowerFactor) * (this.engineHealth / 100);
+  }
+
   get isShifting(): boolean {
     return this.shiftTimerSeconds > 0;
   }
@@ -91,22 +109,34 @@ export class RaceEngine {
     return this.lockedGripMultiplier ?? getGripMultiplier(this.profile.tires, this.tireWarmup);
   }
 
-  shiftUp(): void {
+  /** Speed at which the current gear reaches the redline (km/h). */
+  get gearMaxSpeedKph(): number | undefined {
+    return this.gear > 0 ? getGearMaxSpeedKph(this.profile, this.gear) : undefined;
+  }
+
+  /** Returns false when there is no higher gear. */
+  shiftUp(): boolean {
     if (this.gear >= this.profile.gears.length) {
-      return;
+      return false;
     }
 
     this.gear += 1;
     this.startShift();
+    return true;
   }
 
-  shiftDown(): void {
+  /**
+   * Always shifts. A too-early downshift drags the engine past the redline
+   * through the clutch and wears it (see engineHealth).
+   */
+  shiftDown(): boolean {
     if (this.gear <= 0) {
-      return;
+      return false;
     }
 
     this.gear -= 1;
     this.startShift();
+    return true;
   }
 
   lockTireWarmup(): number {
@@ -155,7 +185,7 @@ export class RaceEngine {
       + (p.engineBrakeTorquePer1000RpmNm * this.rpm) / 1000;
     this.firing = input.throttle && !this.limiterActive;
     const engineTorque = this.firing
-      ? getTorqueAtRpm(p, this.rpm)
+      ? getTorqueAtRpm(p, this.rpm) * this.powerFactor
       : -brakingTorque;
 
     // --- Clutch / gearbox ---
@@ -260,8 +290,14 @@ export class RaceEngine {
       this.engineSpeedRad = (this.wheelSurfaceSpeedMps / radius) * totalRatio;
     }
     this.engineSpeedRad = Math.max(idleRad, this.engineSpeedRad);
+    const maxEngineRad = p.redlineRpm * MAX_OVERREV_FACTOR * RPM_TO_RAD;
+    if (this.engineSpeedRad > maxEngineRad) {
+      this.engineSpeedRad = maxEngineRad;
+      this.clutchLocked = false;
+    }
 
     this.distanceMeters += this.velocityMps * dt;
+    this.updateEngineWear(dt);
     this.updateTireWarmup(dt, tires);
   }
 
@@ -320,6 +356,23 @@ export class RaceEngine {
     return rolling + aero + brake;
   }
 
+  private updateEngineWear(dt: number): void {
+    const wear = this.profile.engineWear;
+    let lost = 0;
+    if (this.limiterActive && this.rpm >= this.profile.redlineRpm - 150) {
+      lost += wear.limiterWearPerSecond * dt;
+    }
+
+    const overRevThousands = (this.rpm - this.profile.redlineRpm) / 1000;
+    if (overRevThousands > 0) {
+      lost += wear.overRevWearPerSecondAt1000Rpm * overRevThousands ** 2 * dt;
+    }
+
+    if (lost > 0) {
+      this.engineHealth = Math.max(0, this.engineHealth - lost);
+    }
+  }
+
   private updateTireWarmup(dt: number, tires: TireProfile): void {
     if (this.lockedGripMultiplier !== undefined) {
       return;
@@ -358,9 +411,10 @@ export function getGripMultiplier(tires: TireProfile, warmup: number): number {
   return curve[curve.length - 1].gripMultiplier;
 }
 
-export function getTopSpeedKph(profile: CarEngineProfile): number {
-  const topGear = profile.gears[profile.gears.length - 1];
-  const wheelRad = (profile.redlineRpm * RPM_TO_RAD) / (topGear.ratio * profile.finalDriveRatio);
+/** Road speed at the redline in the given gear (1-based), km/h. */
+export function getGearMaxSpeedKph(profile: CarEngineProfile, gear: number): number {
+  const gearRatio = profile.gears[gear - 1].ratio;
+  const wheelRad = (profile.redlineRpm * RPM_TO_RAD) / (gearRatio * profile.finalDriveRatio);
   return wheelRad * profile.wheelRadiusMeters * MPS_TO_KPH;
 }
 

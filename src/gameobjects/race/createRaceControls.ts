@@ -3,12 +3,16 @@ import { palette } from '../../config/palette';
 
 const PEDAL_WIDTH = 156;
 const PEDAL_HEIGHT = 300;
-const PADDLE_WIDTH = 82;
-const PADDLE_HEIGHT = 220;
+const SHIFT_BUTTON_WIDTH = 132;
+const SHIFT_BUTTON_HEIGHT = 168;
+/** Gap between the two shift buttons (cluster-local pixels). */
+const SHIFT_BUTTON_GAP = 26;
+/** Larger gap between the brake and the shift buttons, so the brake is not hit by accident. */
+const BRAKE_TO_SHIFT_GAP = 110;
 const SCREEN_EDGE_INSET = 82;
 const PEDAL_BOTTOM_INSET = 58;
-const PADDLE_OFFSET_X = 460;
-const PADDLE_OFFSET_Y = -190;
+/** Extra lift of the pedals as a share of the screen height (easier to reach on phones). */
+const PEDAL_LIFT_SCREEN_RATIO = 0.05;
 
 export interface RaceControls {
   container: Phaser.GameObjects.Container;
@@ -33,11 +37,11 @@ export function createRaceControls(
   const container = scene.add.container(0, 0).setName('race-controls');
   const brakePedal = drawPedal(scene, 'brake-pedal', 0xb83b39);
   const acceleratorPedal = drawPedal(scene, 'accelerator-pedal', palette.accent);
-  const leftPaddle = drawPaddle(scene, 'upshift-paddle', true);
-  const rightPaddle = drawPaddle(scene, 'downshift-paddle', false);
-  container.add([brakePedal, acceleratorPedal, leftPaddle, rightPaddle]);
-  makePaddleInteractive(leftPaddle, onShiftUp);
-  makePaddleInteractive(rightPaddle, onShiftDown);
+  const upshiftButton = drawShiftButton(scene, 'upshift-button', 'up');
+  const downshiftButton = drawShiftButton(scene, 'downshift-button', 'down');
+  container.add([brakePedal, acceleratorPedal, upshiftButton, downshiftButton]);
+  makeShiftButtonInteractive(upshiftButton, onShiftUp);
+  makeShiftButtonInteractive(downshiftButton, onShiftDown);
 
   let throttlePressed = false;
   let brakePressed = false;
@@ -153,7 +157,7 @@ export function createRaceControls(
         y: (screenY - clusterY) / clusterScale,
       });
 
-      const pedalY = height - PEDAL_BOTTOM_INSET * layoutScale;
+      const pedalY = height - PEDAL_BOTTOM_INSET * layoutScale - height * PEDAL_LIFT_SCREEN_RATIO;
       const brakePosition = localPosition(
         SCREEN_EDGE_INSET * layoutScale,
         pedalY,
@@ -164,32 +168,39 @@ export function createRaceControls(
       );
       brakePedal.setPosition(brakePosition.x, brakePosition.y);
       acceleratorPedal.setPosition(acceleratorPosition.x, acceleratorPosition.y);
-      leftPaddle.setPosition(-PADDLE_OFFSET_X, PADDLE_OFFSET_Y);
-      rightPaddle.setPosition(PADDLE_OFFSET_X, PADDLE_OFFSET_Y);
+      // Shift buttons in a row right of the brake: upshift first, then downshift.
+      const upshiftX = brakePosition.x + PEDAL_WIDTH / 2 + BRAKE_TO_SHIFT_GAP + SHIFT_BUTTON_WIDTH / 2;
+      const shiftY = brakePosition.y + (PEDAL_HEIGHT - SHIFT_BUTTON_HEIGHT) / 2;
+      upshiftButton.setPosition(upshiftX, shiftY);
+      downshiftButton.setPosition(upshiftX + SHIFT_BUTTON_WIDTH + SHIFT_BUTTON_GAP, shiftY);
     },
   };
 }
 
-function makePaddleInteractive(
-  paddle: Phaser.GameObjects.Graphics,
+function makeShiftButtonInteractive(
+  button: Phaser.GameObjects.Graphics,
   onShift: () => void,
 ): void {
-  paddle.setInteractive(
+  button.setInteractive(
     new Phaser.Geom.Rectangle(
-      -PADDLE_WIDTH / 2,
-      -PADDLE_HEIGHT / 2,
-      PADDLE_WIDTH,
-      PADDLE_HEIGHT,
+      -SHIFT_BUTTON_WIDTH / 2,
+      -SHIFT_BUTTON_HEIGHT / 2,
+      SHIFT_BUTTON_WIDTH,
+      SHIFT_BUTTON_HEIGHT,
     ),
     Phaser.Geom.Rectangle.Contains,
   );
-  paddle.on(Phaser.Input.Events.POINTER_DOWN, () => paddle.setScale(0.94));
-  paddle.on(Phaser.Input.Events.POINTER_UP, () => {
-    paddle.setScale(1);
+  // Shift on press (like a real paddle) so timing does not depend on releasing the finger.
+  button.on(Phaser.Input.Events.POINTER_DOWN, () => {
+    button.setScale(0.92).setAlpha(0.85);
     onShift();
   });
-  paddle.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, () => paddle.setScale(1));
-  paddle.on(Phaser.Input.Events.POINTER_OUT, () => paddle.setScale(1));
+  const release = (): void => {
+    button.setScale(1).setAlpha(1);
+  };
+  button.on(Phaser.Input.Events.POINTER_UP, release);
+  button.on(Phaser.Input.Events.POINTER_UP_OUTSIDE, release);
+  button.on(Phaser.Input.Events.POINTER_OUT, release);
 }
 
 function drawPedal(
@@ -220,37 +231,42 @@ function drawPedal(
   return graphics;
 }
 
-function drawPaddle(
+function drawShiftButton(
   scene: Phaser.Scene,
   name: string,
-  isPlus: boolean,
+  direction: 'up' | 'down',
 ): Phaser.GameObjects.Graphics {
   const graphics = scene.add.graphics().setName(name);
-  const halfWidth = PADDLE_WIDTH / 2;
-  const halfHeight = PADDLE_HEIGHT / 2;
-  const accentColor = isPlus ? palette.accent : palette.textSecondary;
+  const halfWidth = SHIFT_BUTTON_WIDTH / 2;
+  const halfHeight = SHIFT_BUTTON_HEIGHT / 2;
+  const isUp = direction === 'up';
+  const accentColor = isUp ? palette.accent : palette.textSecondary;
 
+  // Rounded key, same style family as the pedals.
   graphics.fillStyle(palette.track, 0.96);
-  graphics.lineStyle(5, accentColor, 1);
-  graphics.beginPath();
-  graphics.moveTo(-halfWidth + 8, -halfHeight);
-  graphics.lineTo(halfWidth - 8, -halfHeight);
-  graphics.lineTo(halfWidth, halfHeight - 22);
-  graphics.lineTo(0, halfHeight);
-  graphics.lineTo(-halfWidth, halfHeight - 22);
-  graphics.closePath();
-  graphics.fillPath();
-  graphics.strokePath();
-
   graphics.lineStyle(7, accentColor, 1);
-  graphics.beginPath();
-  graphics.moveTo(-20, -8);
-  graphics.lineTo(20, -8);
-  if (isPlus) {
-    graphics.moveTo(0, -28);
-    graphics.lineTo(0, 12);
+  graphics.fillRoundedRect(-halfWidth, -halfHeight, SHIFT_BUTTON_WIDTH, SHIFT_BUTTON_HEIGHT, 22);
+  graphics.strokeRoundedRect(-halfWidth, -halfHeight, SHIFT_BUTTON_WIDTH, SHIFT_BUTTON_HEIGHT, 22);
+
+  // Double chevron pointing up or down.
+  // Up: tips at the top, arms going down. Down: tips at the bottom, arms going up.
+  const armRise = isUp ? 24 : -24;
+  const tips = isUp ? [-52, -18] : [-14, 20];
+  graphics.lineStyle(12, accentColor, 1);
+  tips.forEach((tipY) => {
+    graphics.beginPath();
+    graphics.moveTo(-32, tipY + armRise);
+    graphics.lineTo(0, tipY);
+    graphics.lineTo(32, tipY + armRise);
+    graphics.strokePath();
+  });
+
+  // "+" / "−" marker at the bottom of the key.
+  graphics.lineStyle(7, palette.textPrimary, 0.9);
+  graphics.lineBetween(-12, halfHeight - 28, 12, halfHeight - 28);
+  if (isUp) {
+    graphics.lineBetween(0, halfHeight - 40, 0, halfHeight - 16);
   }
-  graphics.strokePath();
 
   return graphics;
 }
