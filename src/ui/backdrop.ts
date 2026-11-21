@@ -1,5 +1,4 @@
 import Phaser from 'phaser';
-import { getGraphicsQuality } from '../settings/graphicsQuality';
 
 /**
  * Garage-style backdrop: the background picture is slightly darkened and
@@ -8,45 +7,50 @@ import { getGraphicsQuality } from '../settings/graphicsQuality';
 export const GARAGE_BACKDROP_DIM = 0.36;
 /** Time the dim + blur take to settle in after entering the garage. */
 export const GARAGE_BACKDROP_FADE_MS = 1000;
-/** Blur spread in screen pixels (independent of texture size and zoom). */
-const GARAGE_BACKDROP_BLUR_PX = 0.55;
-const BLUR_STEPS = 4;
-
 /**
- * Blurs a full-screen background image; amount 0..1 scales the blur (for
- * fading it in). Call again after the image is rescaled or gets a new
- * texture. Skipped on low graphics quality (a full-screen blur costs a few
- * passes every frame) and without WebGL.
+ * The blur is baked once into a small copy of the picture (this many times
+ * smaller) that is drawn stretched over the sharp one: GPU filtering makes it
+ * soft. Works with every renderer and quality and costs nothing per frame
+ * (a real-time blur shader did not run on some phones).
  */
-export function applyBackdropBlur(image: Phaser.GameObjects.Image, amount = 1): Phaser.FX.Blur | undefined {
-  const fx = image.preFX;
-  if (!fx) {
-    return undefined;
-  }
-  fx.clear();
-  if (getGraphicsQuality() === 'low' || image.scale <= 0) {
-    return undefined;
-  }
-  const spread = getBlurSpread(image);
-  fx.padding = Math.ceil(spread * BLUR_STEPS);
-  return fx.addBlur(1, spread * amount, spread * amount, 1, 0xffffff, BLUR_STEPS);
+export const BACKDROP_BLUR_DOWNSCALE = 3;
+
+export function getBlurredTextureKey(key: string): string {
+  return `${key}-blurred`;
 }
 
-/** Changes the blur made by applyBackdropBlur without rebuilding it. */
-export function setBackdropBlurAmount(
-  image: Phaser.GameObjects.Image,
-  blur: Phaser.FX.Blur | undefined,
-  amount: number,
-): void {
-  if (!blur) {
-    return;
+/** Creates (once) the blurred copy of a loaded texture; returns its key. */
+export function ensureBlurredTexture(scene: Phaser.Scene, key: string): string | undefined {
+  const blurredKey = getBlurredTextureKey(key);
+  if (scene.textures.exists(blurredKey)) {
+    return blurredKey;
   }
-  const spread = getBlurSpread(image) * amount;
-  blur.x = spread;
-  blur.y = spread;
+  if (!scene.textures.exists(key)) {
+    return undefined;
+  }
+  const source = scene.textures.get(key).getSourceImage() as CanvasImageSource & { width: number; height: number };
+  // Two halving-ish steps give a smoother result than one big jump.
+  const step = (input: CanvasImageSource, width: number, height: number): HTMLCanvasElement => {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = 'high';
+      context.drawImage(input, 0, 0, canvas.width, canvas.height);
+    }
+    return canvas;
+  };
+  const middle = step(source, source.width / Math.sqrt(BACKDROP_BLUR_DOWNSCALE), source.height / Math.sqrt(BACKDROP_BLUR_DOWNSCALE));
+  const small = step(middle, source.width / BACKDROP_BLUR_DOWNSCALE, source.height / BACKDROP_BLUR_DOWNSCALE);
+  scene.textures.addCanvas(blurredKey, small);
+  return blurredKey;
 }
 
-/** The blur runs on the texture before scaling: screen px → texels. */
-function getBlurSpread(image: Phaser.GameObjects.Image): number {
-  return GARAGE_BACKDROP_BLUR_PX / image.scale;
+export function removeBlurredTexture(scene: Phaser.Scene, key: string): void {
+  const blurredKey = getBlurredTextureKey(key);
+  if (scene.textures.exists(blurredKey)) {
+    scene.textures.remove(blurredKey);
+  }
 }

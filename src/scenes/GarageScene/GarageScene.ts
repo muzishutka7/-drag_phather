@@ -13,10 +13,10 @@ import {
 } from '../../settings/graphicsQuality';
 import { getRenderResolution, getRenderResolutionScale } from '../../settings/renderResolution';
 import {
-  applyBackdropBlur,
+  ensureBlurredTexture,
   GARAGE_BACKDROP_DIM,
   GARAGE_BACKDROP_FADE_MS,
-  setBackdropBlurAmount,
+  removeBlurredTexture,
 } from '../../ui/backdrop';
 import { createGraphicsSettings, type GraphicsSettings } from '../../ui/createGraphicsSettings';
 import { preloadVehicleAssets } from '../../assets/vehicleAssets';
@@ -51,7 +51,8 @@ export class GarageScene extends Phaser.Scene {
   private baseBackgroundScale = 1;
   /** 0..1: how far the dim + blur of the background have faded in. */
   private backdropAmount = 1;
-  private backdropBlur?: Phaser.FX.Blur;
+  /** Blurred copy of the background, faded in over the sharp one. */
+  private blurredBackground?: Phaser.GameObjects.Image;
   /** Background zoom over its cover size: starts at 1 and slowly pushes in. */
   private backgroundZoom = BACKGROUND_SETTLED_ZOOM;
   private uiContainer?: Phaser.GameObjects.Container;
@@ -124,6 +125,7 @@ export class GarageScene extends Phaser.Scene {
 
   update(time: number): void {
     this.carDisplay?.update(time);
+    this.syncBlurredBackground();
   }
 
   private handleViewportResize = (): void => {
@@ -147,6 +149,10 @@ export class GarageScene extends Phaser.Scene {
     }
 
     this.backgroundImage = this.add.image(0, 0, this.backgroundKey).setDepth(-2);
+    const blurredKey = ensureBlurredTexture(this, this.backgroundKey);
+    if (blurredKey) {
+      this.blurredBackground = this.add.image(0, 0, blurredKey).setDepth(-1.5);
+    }
     this.backgroundOverlay = this.add.graphics().setDepth(-1);
     this.layoutBackground(this.scale.width, this.scale.height);
   }
@@ -161,7 +167,7 @@ export class GarageScene extends Phaser.Scene {
         ));
       this.baseBackgroundScale = this.backgroundImage.scale;
       this.backgroundImage.setScale(this.baseBackgroundScale * this.backgroundZoom);
-      this.backdropBlur = applyBackdropBlur(this.backgroundImage, this.backdropAmount);
+      this.syncBlurredBackground();
     }
 
     this.backgroundOverlay?.clear();
@@ -173,9 +179,20 @@ export class GarageScene extends Phaser.Scene {
   private setBackdropAmount(amount: number): void {
     this.backdropAmount = amount;
     this.backgroundOverlay?.setAlpha(amount);
-    if (this.backgroundImage) {
-      setBackdropBlurAmount(this.backgroundImage, this.backdropBlur, amount);
+    this.syncBlurredBackground();
+  }
+
+  /** Keeps the blurred copy exactly over the sharp background (zoom, fades, transitions). */
+  private syncBlurredBackground(): void {
+    const sharp = this.backgroundImage;
+    const blurred = this.blurredBackground;
+    if (!sharp || !blurred) {
+      return;
     }
+    blurred
+      .setPosition(sharp.x, sharp.y)
+      .setScale(sharp.scaleX * (sharp.width / blurred.width), sharp.scaleY * (sharp.height / blurred.height))
+      .setAlpha(sharp.alpha * this.backdropAmount);
   }
 
   private drawGarage(width: number, height: number, entrance = false): void {
@@ -372,11 +389,16 @@ export class GarageScene extends Phaser.Scene {
   private applyBackground(key: string, quality: GraphicsQuality): void {
     const previousKey = this.backgroundKey;
     this.backgroundImage?.setTexture(key);
+    const blurredKey = ensureBlurredTexture(this, key);
+    if (blurredKey) {
+      this.blurredBackground?.setTexture(blurredKey);
+    }
     this.backgroundKey = key;
     this.activeQuality = quality;
 
     if (previousKey && previousKey !== key && this.textures.exists(previousKey)) {
       this.textures.remove(previousKey);
+      removeBlurredTexture(this, previousKey);
     }
 
     this.graphicsSettings?.qualitySelector.refresh();

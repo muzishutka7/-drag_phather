@@ -29,15 +29,22 @@ function getTrackUrl(name: string, element: HTMLAudioElement): string {
   return element.canPlayType('audio/ogg; codecs="vorbis"') ? `${base}.ogg` : `${base}.m4a`;
 }
 
+/** The game is in the background (app minimised, tab hidden, screen off). */
+function isHidden(): boolean {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden';
+}
+
+/** Plays only when the music volume is not off and the game is visible. */
 function applyVolume(): void {
   if (!audio) {
     return;
   }
   const gain = getChannelVolumeGain('music');
   audio.volume = Math.min(1, MUSIC_LEVEL * gain * fade);
-  if (gain === 0 && !audio.paused) {
+  const shouldPlay = gain > 0 && !isHidden();
+  if (!shouldPlay && !audio.paused) {
     audio.pause();
-  } else if (gain > 0 && audio.paused) {
+  } else if (shouldPlay && audio.paused) {
     void audio.play().catch(() => undefined);
   }
 }
@@ -48,11 +55,8 @@ function playTrack(index: number): void {
   }
   trackIndex = index % TRACKS.length;
   audio.src = getTrackUrl(TRACKS[trackIndex], audio);
+  // Plays if allowed; blocked until the first tap on some browsers (retried below).
   applyVolume();
-  if (getChannelVolumeGain('music') > 0) {
-    // Blocked until the first tap on some browsers; the next tap retries.
-    void audio.play().catch(() => undefined);
-  }
 }
 
 /** Starts the music once (later calls do nothing). */
@@ -73,13 +77,11 @@ export function startMusic(): void {
     }
   });
   // If autoplay was blocked, start on the next tap or key.
-  const retry = (): void => {
-    if (audio?.paused && getChannelVolumeGain('music') > 0) {
-      void audio.play().catch(() => undefined);
-    }
-  };
-  window.addEventListener('pointerdown', retry);
-  window.addEventListener('keydown', retry);
+  window.addEventListener('pointerdown', applyVolume);
+  window.addEventListener('keydown', applyVolume);
+  // Pause when the app goes to the background, resume when it comes back.
+  document.addEventListener('visibilitychange', applyVolume);
+  window.addEventListener('pagehide', applyVolume);
 
   // Soft fade-in of the first track.
   fade = 0;

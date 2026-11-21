@@ -14,7 +14,7 @@ const VOLUME_GAIN: Record<SoundVolume, number> = {
 const CHANNELS: Record<SoundChannel, { storageKey: string; defaultVolume: SoundVolume }> = {
   // The effects key is the one the old single "sound" setting used.
   effects: { storageKey: 'drag-racing.sound-volume', defaultVolume: 'full' },
-  music: { storageKey: 'drag-racing.music-volume', defaultVolume: 'half' },
+  music: { storageKey: 'drag-racing.music-volume', defaultVolume: 'low' },
 };
 
 const inMemory = new Map<SoundChannel, SoundVolume>();
