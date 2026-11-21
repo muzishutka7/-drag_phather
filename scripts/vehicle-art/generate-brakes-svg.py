@@ -1,4 +1,4 @@
-"""Usage: python scripts/vehicle-art/generate-brakes-svg.py assets-source/vehicles/lanos
+"""Usage: python scripts/vehicle-art/generate-brakes-svg.py assets-source/vehicles/parts
 
 Stock brake and suspension parts (SVG, millimetres, centred on the axle),
 sized for the 13" steel wheel: its vent holes sit at r = 106..138 mm, so the
@@ -6,14 +6,16 @@ disc / drum reach r = 186 mm to fill them. Shaded only radially so they can
 spin, and kept dark because they sit in the shadow inside the wheel; the
 wheel light overlay adds the light direction."""
 import math, os, sys
-OUT = sys.argv[1]; os.makedirs(OUT, exist_ok=True)
+OUT = sys.argv[1]  # parts root: brakes go to <OUT>/brakes, shocks to <OUT>/suspension
 
 def svg(content, half, defs=''):
     return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-half} {-half} {2 * half} {2 * half}" '
             f'width="{2 * half}" height="{2 * half}"><defs>{defs}</defs>{content}</svg>')
 
 def write(name, half, content, defs=''):
-    open(os.path.join(OUT, name), 'w').write(svg(content, half, defs))
+    folder = os.path.join(OUT, 'suspension' if name.startswith('shock') else 'brakes')
+    os.makedirs(folder, exist_ok=True)
+    open(os.path.join(folder, name), 'w').write(svg(content, half, defs))
 
 def radial(id_, stops, r):
     s = ''.join(f'<stop offset="{o / r:.4f}" stop-color="{c}"/>' for o, c in stops)

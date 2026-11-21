@@ -1,7 +1,6 @@
 import Phaser from 'phaser';
 import {
   getBackgroundKey,
-  getBackgroundUrl,
   preloadBackground,
 } from '../../assets/backgrounds';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/gameConfig';
@@ -13,15 +12,28 @@ import {
   type GraphicsQuality,
 } from '../../settings/graphicsQuality';
 import { getRenderResolution, getRenderResolutionScale } from '../../settings/renderResolution';
+import {
+  applyBackdropBlur,
+  GARAGE_BACKDROP_DIM,
+  GARAGE_BACKDROP_FADE_MS,
+  setBackdropBlurAmount,
+} from '../../ui/backdrop';
 import { createGraphicsSettings, type GraphicsSettings } from '../../ui/createGraphicsSettings';
 import { preloadVehicleAssets } from '../../assets/vehicleAssets';
-import { STARTER_COUPE_PROFILE } from '../../gameobjects/cars/carProfiles';
-import { getCarVisualParts, LANOS_VISUAL } from '../../gameobjects/cars/carVisuals';
+import { getBackgroundAsset } from '../../assets/assetBundles';
+import { getAssetPreloader, startSceneWhenReady } from '../../assets/AssetPreloadScene';
+import { playEngineStartStop, stopEngineStartStop } from '../../audio/garageEngineSound';
+import { startMusic } from '../../audio/musicPlayer';
+import { playableCars } from '../../gameobjects/cars/carCatalog';
+import { getCarVisualParts } from '../../gameobjects/cars/carVisuals';
+import { getSelectedCar, setSelectedCar } from '../../state/selectedCar';
 import { createGarageCarDisplay, type GarageCarDisplay } from './components/createGarageCarDisplay';
 import { createPartsStoreButton } from './components/createPartsStoreButton';
 import { createRaceFlagButton } from './components/createRaceFlagButton';
 
 const BACKGROUND_NAME = 'sunny-garage';
+/** The garage background ends slightly zoomed in (after a slow push-in on entry). */
+const BACKGROUND_SETTLED_ZOOM = 1.06;
 
 export class GarageScene extends Phaser.Scene {
   private backgroundKey = '';
@@ -37,6 +49,11 @@ export class GarageScene extends Phaser.Scene {
   private incomingBackground?: Phaser.GameObjects.Image;
   private incomingBackgroundKey = '';
   private baseBackgroundScale = 1;
+  /** 0..1: how far the dim + blur of the background have faded in. */
+  private backdropAmount = 1;
+  private backdropBlur?: Phaser.FX.Blur;
+  /** Background zoom over its cover size: starts at 1 and slowly pushes in. */
+  private backgroundZoom = BACKGROUND_SETTLED_ZOOM;
   private uiContainer?: Phaser.GameObjects.Container;
   private storeButton?: Phaser.GameObjects.Container;
   private raceButton?: Phaser.GameObjects.Container;
@@ -46,7 +63,8 @@ export class GarageScene extends Phaser.Scene {
     super('GarageScene');
   }
 
-  init(): void {
+  init(data?: { backgroundZoom?: number }): void {
+    this.backgroundZoom = data?.backgroundZoom ?? 1;
     this.isBackgroundLoading = false;
     this.isTransitioning = false;
     this.transitionBackgroundReady = false;
@@ -58,22 +76,47 @@ export class GarageScene extends Phaser.Scene {
   preload(): void {
     this.activeQuality = getGraphicsQuality();
     this.backgroundKey = preloadBackground(this, BACKGROUND_NAME, this.activeQuality);
-    preloadVehicleAssets(this, getCarVisualParts(LANOS_VISUAL), this.activeQuality);
+    // All playable cars, so flipping through them in the garage is instant.
+    const parts = new Set(playableCars.flatMap((car) => getCarVisualParts(car.visual)));
+    preloadVehicleAssets(this, [...parts], this.activeQuality);
   }
 
   create(): void {
     this.applyRenderResolution();
+    // Background music starts after the intro and keeps playing in every scene.
+    startMusic();
+    // The background arrives sharp and bright, then settles into the dimmed,
+    // blurred garage backdrop in front of the player.
+    this.backdropAmount = 0;
     this.createBackground();
+    // Slow push-in, as long as the dim + blur fade in.
+    this.tweens.add({
+      targets: this,
+      backgroundZoom: BACKGROUND_SETTLED_ZOOM,
+      duration: GARAGE_BACKDROP_FADE_MS,
+      ease: 'Sine.easeInOut',
+      onUpdate: () => this.backgroundImage?.setScale(this.baseBackgroundScale * this.backgroundZoom),
+    });
+    this.tweens.addCounter({
+      from: 0,
+      to: 1,
+      duration: GARAGE_BACKDROP_FADE_MS,
+      ease: 'Sine.easeInOut',
+      onUpdate: (tween) => this.setBackdropAmount(tween.getValue() ?? 1),
+    });
     graphicsQualities.forEach((quality) => {
       const introBackgroundKey = getBackgroundKey('sunset-drift', quality);
       if (this.textures.exists(introBackgroundKey)) {
         this.textures.remove(introBackgroundKey);
       }
     });
-    this.drawGarage(this.scale.width, this.scale.height);
+    this.drawGarage(this.scale.width, this.scale.height, true);
+    // The car rolls in with its engine starting up, as when switching cars.
+    playEngineStartStop(this);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     window.addEventListener('resize', this.handleViewportResize);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      stopEngineStartStop();
       this.scale.off(Phaser.Scale.Events.RESIZE, this.handleResize, this);
       window.removeEventListener('resize', this.handleViewportResize);
     });
@@ -117,14 +160,25 @@ export class GarageScene extends Phaser.Scene {
           height / this.backgroundImage.height,
         ));
       this.baseBackgroundScale = this.backgroundImage.scale;
+      this.backgroundImage.setScale(this.baseBackgroundScale * this.backgroundZoom);
+      this.backdropBlur = applyBackdropBlur(this.backgroundImage, this.backdropAmount);
     }
 
     this.backgroundOverlay?.clear();
-    this.backgroundOverlay?.fillStyle(palette.background, 0.3);
+    this.backgroundOverlay?.fillStyle(palette.background, GARAGE_BACKDROP_DIM);
     this.backgroundOverlay?.fillRect(0, 0, width, height);
+    this.backgroundOverlay?.setAlpha(this.backdropAmount);
   }
 
-  private drawGarage(width: number, height: number): void {
+  private setBackdropAmount(amount: number): void {
+    this.backdropAmount = amount;
+    this.backgroundOverlay?.setAlpha(amount);
+    if (this.backgroundImage) {
+      setBackdropBlurAmount(this.backgroundImage, this.backdropBlur, amount);
+    }
+  }
+
+  private drawGarage(width: number, height: number, entrance = false): void {
     this.uiContainer?.destroy(true);
     this.uiContainer = this.add.container(0, 0);
 
@@ -142,11 +196,20 @@ export class GarageScene extends Phaser.Scene {
       34 * scale + 56 * scale,
       34 * scale,
       scale,
-      () => this.scene.start('RaceScene'),
+      () => startSceneWhenReady(this, 'RaceScene'),
     );
     this.uiContainer.add(this.raceButton);
 
-    this.carDisplay = createGarageCarDisplay(this, width, height, scale, STARTER_COUPE_PROFILE);
+    this.carDisplay = createGarageCarDisplay(this, width, height, scale, {
+      cars: playableCars,
+      index: playableCars.indexOf(getSelectedCar()),
+      entrance,
+      onSelect: (car) => {
+        setSelectedCar(car.id);
+        // The newly picked car starts up, idles and switches off.
+        playEngineStartStop(this);
+      },
+    });
     this.uiContainer.add(this.carDisplay.container);
 
     this.graphicsSettings = createGraphicsSettings(
@@ -202,37 +265,19 @@ export class GarageScene extends Phaser.Scene {
       },
     });
 
-    if (this.textures.exists(this.incomingBackgroundKey)) {
-      this.transitionBackgroundReady = true;
-      this.tryStartStoreBackgroundTransition();
-      return;
-    }
-
-    this.load.image(
-      this.incomingBackgroundKey,
-      getBackgroundUrl('parts-garage', quality),
-    );
-
-    const onComplete = (): void => {
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.transitionBackgroundReady = true;
-      this.tryStartStoreBackgroundTransition();
-    };
-
-    const onError = (file: Phaser.Loader.File): void => {
-      if (file.key !== this.incomingBackgroundKey) {
+    // Normally already loaded (see AssetPreloadScene); this only waits if it is not.
+    void getAssetPreloader(this).loadScene('PartsStoreScene').then(() => {
+      if (!this.isTransitioning) {
         return;
       }
-
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.load.off(`filecomplete-image-${this.incomingBackgroundKey}`, onComplete);
-      console.error(`Parts store background failed to load: ${file.src}`);
-      this.cancelStoreTransition();
-    };
-
-    this.load.once(`filecomplete-image-${this.incomingBackgroundKey}`, onComplete);
-    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-    this.load.start();
+      if (!this.textures.exists(this.incomingBackgroundKey)) {
+        console.error(`Parts store background failed to load: ${this.incomingBackgroundKey}`);
+        this.cancelStoreTransition();
+        return;
+      }
+      this.transitionBackgroundReady = true;
+      this.tryStartStoreBackgroundTransition();
+    });
   }
 
   private tryStartStoreBackgroundTransition(): void {
@@ -306,32 +351,22 @@ export class GarageScene extends Phaser.Scene {
     this.isBackgroundLoading = true;
     this.graphicsSettings?.qualitySelector.setEnabled(false);
     this.graphicsSettings?.resolutionSelector.setEnabled(false);
-    this.load.image(key, getBackgroundUrl(BACKGROUND_NAME, quality));
-
-    const onComplete = (): void => {
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.isBackgroundLoading = false;
-      this.applyBackground(key, quality);
-    };
-
-    const onError = (file: Phaser.Loader.File): void => {
-      if (file.key !== key) {
+    void getAssetPreloader(this).loadAssets([getBackgroundAsset(BACKGROUND_NAME, quality)]).then(({ failed }) => {
+      if (!this.sys.isActive()) {
         return;
       }
-
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.load.off(`filecomplete-image-${key}`, onComplete);
+      if (failed.length === 0) {
+        this.isBackgroundLoading = false;
+        this.applyBackground(key, quality);
+        return;
+      }
       this.isBackgroundLoading = false;
-      console.error(`Garage background failed to load (${quality}): ${file.src}`);
+      console.error(`Garage background failed to load (${quality}): ${key}`);
       setGraphicsQuality(this.activeQuality);
       this.graphicsSettings?.qualitySelector.refresh();
       this.graphicsSettings?.qualitySelector.setEnabled(true);
       this.graphicsSettings?.resolutionSelector.setEnabled(true);
-    };
-
-    this.load.once(`filecomplete-image-${key}`, onComplete);
-    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-    this.load.start();
+    });
   }
 
   private applyBackground(key: string, quality: GraphicsQuality): void {

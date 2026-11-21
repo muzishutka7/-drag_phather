@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import { palette } from './palette';
 import { getRenderResolutionScale } from '../settings/renderResolution';
 import { getFrameRate } from '../settings/frameRate';
+import { AssetPreloadScene } from '../assets/AssetPreloadScene';
 import { BootScene } from '../scenes/BootScene';
 import { GarageScene } from '../scenes/GarageScene/GarageScene';
 import { IntroScene } from '../scenes/IntroScene/IntroScene';
@@ -25,7 +26,7 @@ export const gameConfig: Phaser.Types.Core.GameConfig = {
     // Gas pedal + shift paddle (+ brake) at the same time on touch screens.
     activePointers: 4,
   },
-  scene: [BootScene, IntroScene, GarageScene, PartsStoreScene, RaceScene],
+  scene: [BootScene, AssetPreloadScene, IntroScene, GarageScene, PartsStoreScene, RaceScene],
   scale: {
     mode: Phaser.Scale.NONE,
     autoCenter: Phaser.Scale.CENTER_BOTH,

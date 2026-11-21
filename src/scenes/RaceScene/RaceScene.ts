@@ -2,21 +2,21 @@ import Phaser from 'phaser';
 import {
   type BackgroundName,
   getBackgroundKey,
-  getBackgroundUrl,
   preloadBackground,
 } from '../../assets/backgrounds';
 import {
   getRaceAssetKeys,
-  getRaceAssetUrl,
   preloadRaceAssets,
   raceAssetNames,
   type RaceAssetKeys,
 } from '../../assets/raceAssets';
+import { getAssetPreloader, startSceneWhenReady } from '../../assets/AssetPreloadScene';
 import { RaceAudio } from '../../audio/raceAudio';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/gameConfig';
 import { palette } from '../../config/palette';
 import { preloadVehicleAssets } from '../../assets/vehicleAssets';
-import { getCarVisualParts, LANOS_VISUAL } from '../../gameobjects/cars/carVisuals';
+import type { CarDefinition } from '../../gameobjects/cars/carCatalog';
+import { getCarVisualParts, REFERENCE_CAR_LENGTH_MM } from '../../gameobjects/cars/carVisuals';
 import { createCarModel, type CarModel } from '../../gameobjects/cars/createCarModel';
 import { createRaceControls, type RaceControls } from '../../gameobjects/race/createRaceControls';
 import { createRaceHud, type RaceHud } from '../../gameobjects/race/createRaceHud';
@@ -36,6 +36,7 @@ import {
 import { getRenderResolution, getRenderResolutionScale } from '../../settings/renderResolution';
 import { createGraphicsSettings, type GraphicsSettings } from '../../ui/createGraphicsSettings';
 import { getEngineHealth, setEngineHealth } from '../../state/engineHealth';
+import { getSelectedCar } from '../../state/selectedCar';
 import { createCheckEngineIcon, type CheckEngineIcon } from '../../ui/createCheckEngineIcon';
 import { createGarageBackButton } from '../GarageScene/components/createGarageBackButton';
 
@@ -53,15 +54,17 @@ const CAR_POSITION_X = 276;
 /** Lifts the car from the lane line into the middle of the upper lane (layout px). */
 const CAR_LANE_VERTICAL_OFFSET = 37;
 const CAR_SCALE = 1.32;
-/** On-screen car length at CAR_SCALE 1 (960×540 layout pixels). */
+/** On-screen length of a REFERENCE_CAR_LENGTH_MM car at CAR_SCALE 1 (960×540 layout pixels). */
 const CAR_LENGTH_PX = 250;
 /** Visual cap so fast wheels do not strobe. */
 const MAX_WHEEL_ANGULAR_VELOCITY = Math.PI * 10;
 /** How many screen pixels (at 960×540 layout) one meter of track takes. */
 const PIXELS_PER_METER = 28;
-/** Distance from the car origin to its front bumper, in car-local pixels. */
+/** Distance from the car origin to the front bumper of the reference car, in layout pixels. */
 const CAR_FRONT_OFFSET = 124;
 const BACKGROUND_PARALLAX = 0.08;
+/** Throttle held this close to the redline plays the rev limiter sound. */
+const LIMITER_SOUND_RPM_WINDOW = 150;
 /**
  * Check-engine light on the tachometer face, below the needle hub
  * (cluster-local pixels; the tachometer center is at -206, -236).
@@ -114,7 +117,8 @@ export class RaceScene extends Phaser.Scene {
   private carContainer?: Phaser.GameObjects.Container;
   private carModel?: CarModel;
   private tireEffects?: TireEffects;
-  private engine = new RaceEngine();
+  private car: CarDefinition = getSelectedCar();
+  private engine = new RaceEngine(this.car.profile);
   private session = new RaceSession(this.engine);
   private hud?: RaceHud;
   private savedEngineHealth = 100;
@@ -123,6 +127,7 @@ export class RaceScene extends Phaser.Scene {
   private warmupGauge?: TireWarmupGauge;
   private trackMarks?: Phaser.GameObjects.Graphics;
   private audio?: RaceAudio;
+  private throttlePressed = false;
   private soundEvents = { countdown: -1, amber: 0, green: false, phase: '', gear: 0 };
   private drivenWheelRotation = 0;
   private freeWheelRotation = 0;
@@ -139,8 +144,19 @@ export class RaceScene extends Phaser.Scene {
     super('RaceScene');
   }
 
+  /** Front bumper offset of the current car (shorter cars end sooner). */
+  private get carFrontOffset(): number {
+    return CAR_FRONT_OFFSET * (this.car.visual.lengthMm / REFERENCE_CAR_LENGTH_MM);
+  }
+
   init(): void {
     this.isBackgroundLoading = false;
+    const car = getSelectedCar();
+    if (car.id !== this.car.id) {
+      this.car = car;
+      this.engine = new RaceEngine(car.profile);
+      this.session = new RaceSession(this.engine);
+    }
     this.session.restart();
     this.engine.engineHealth = getEngineHealth(this.engine.profile.id);
     this.savedEngineHealth = this.engine.engineHealth;
@@ -154,7 +170,7 @@ export class RaceScene extends Phaser.Scene {
     this.activeQuality = getGraphicsQuality();
     this.backgroundKey = preloadBackground(this, BACKGROUND_NAME, this.activeQuality);
     this.raceAssetKeys = preloadRaceAssets(this, this.activeQuality);
-    preloadVehicleAssets(this, getCarVisualParts(LANOS_VISUAL), this.activeQuality);
+    preloadVehicleAssets(this, getCarVisualParts(this.car.visual), this.activeQuality);
   }
 
   create(): void {
@@ -186,6 +202,7 @@ export class RaceScene extends Phaser.Scene {
     }
 
     const throttle = this.raceControls.isThrottlePressed();
+    this.throttlePressed = throttle;
     const brake = this.raceControls.isBrakePressed();
     this.session.update(delta, { throttle, brake });
 
@@ -277,6 +294,8 @@ export class RaceScene extends Phaser.Scene {
       idleRpm: engine.profile.idleRpm,
       redlineRpm: engine.profile.redlineRpm,
       firing: engine.firing,
+      limiter: engine.limiterActive
+        || (this.throttlePressed && engine.rpm >= engine.profile.redlineRpm - LIMITER_SOUND_RPM_WINDOW),
       wheelSpinKph: engine.wheelSpinSpeedKph,
       speedKph: engine.speedKph,
     });
@@ -350,8 +369,8 @@ export class RaceScene extends Phaser.Scene {
     const pxPerMm = car.scaleX;
     const drivetrain = this.engine.profile.drivetrain;
     const axles = [
-      ...(drivetrain !== 'front-wheel' ? [LANOS_VISUAL.rearAxle] : []),
-      ...(drivetrain !== 'rear-wheel' ? [LANOS_VISUAL.frontAxle] : []),
+      ...(drivetrain !== 'front-wheel' ? [this.car.visual.rearAxle] : []),
+      ...(drivetrain !== 'rear-wheel' ? [this.car.visual.frontAxle] : []),
     ];
     this.tireEffects.update(delta, {
       distanceMeters: this.engine.distanceMeters,
@@ -359,10 +378,10 @@ export class RaceScene extends Phaser.Scene {
       wheelSlipKph: this.engine.wheelSpinSpeedKph,
       tireWarmup: this.engine.tireWarmup,
       wheels: axles.map((axle) => ({
-        screenX: car.x + (axle.x - LANOS_VISUAL.lengthMm / 2) * pxPerMm,
+        screenX: car.x + (axle.x - this.car.visual.lengthMm / 2) * pxPerMm,
         screenY: car.y,
       })),
-      carFrontScreenX: (CAR_POSITION_X + CAR_FRONT_OFFSET * CAR_SCALE) * layoutScale,
+      carFrontScreenX: (CAR_POSITION_X + this.carFrontOffset * CAR_SCALE) * layoutScale,
       trackPixelsPerMeter: PIXELS_PER_METER * layoutScale,
       carPixelsPerMeter: pxPerMm * 1000,
     });
@@ -391,7 +410,7 @@ export class RaceScene extends Phaser.Scene {
     }
 
     this.trackMarks.clear();
-    const frontX = (CAR_POSITION_X + CAR_FRONT_OFFSET * CAR_SCALE) * layoutScale;
+    const frontX = (CAR_POSITION_X + this.carFrontOffset * CAR_SCALE) * layoutScale;
     const top = height - roadHeight + 31 * roadScale;
     const bottom = height - 4 * roadScale;
     const drawLine = (meters: number, checkered: boolean): void => {
@@ -548,7 +567,7 @@ export class RaceScene extends Phaser.Scene {
     }
 
     // Layered car (body, suspension, brakes, tires, rims); origin on the ground.
-    this.carModel = createCarModel(this, LANOS_VISUAL, this.activeQuality);
+    this.carModel = createCarModel(this, this.car.visual, this.activeQuality);
     this.carContainer = this.carModel.container.setDepth(2);
 
     this.instrumentContainer = this.add.container(0, 0)
@@ -612,7 +631,7 @@ export class RaceScene extends Phaser.Scene {
       this,
       (distance) => this.session.selectDistance(distance),
       () => this.session.restart(),
-      () => this.scene.start('GarageScene'),
+      () => startSceneWhenReady(this, 'GarageScene'),
     );
     this.layoutRaceArtwork(this.scale.width, this.scale.height);
   }
@@ -639,7 +658,7 @@ export class RaceScene extends Phaser.Scene {
         CAR_POSITION_X * layoutScale,
         wheelContactY - CAR_LANE_VERTICAL_OFFSET * layoutScale,
       )
-      .setScale((CAR_LENGTH_PX * CAR_SCALE * layoutScale) / LANOS_VISUAL.lengthMm);
+      .setScale((CAR_LENGTH_PX * CAR_SCALE * layoutScale) / REFERENCE_CAR_LENGTH_MM);
 
     const clusterX = INSTRUMENT_POSITION.x * layoutScale;
     const clusterY = INSTRUMENT_POSITION.y * layoutScale;
@@ -693,7 +712,7 @@ export class RaceScene extends Phaser.Scene {
       34 * scale,
       34 * scale,
       scale,
-      () => this.scene.start('GarageScene'),
+      () => startSceneWhenReady(this, 'GarageScene'),
     );
     this.uiContainer.add(this.backButton);
 
@@ -725,58 +744,20 @@ export class RaceScene extends Phaser.Scene {
     this.graphicsSettings?.setEnabled(false);
     const nextBackgroundKey = getBackgroundKey(BACKGROUND_NAME, quality);
     const nextRaceAssetKeys = getRaceAssetKeys(quality);
-    const pendingFiles = new Map<string, string>();
-
-    if (!this.textures.exists(nextBackgroundKey)) {
-      pendingFiles.set(nextBackgroundKey, getBackgroundUrl(BACKGROUND_NAME, quality));
-    }
-    raceAssetNames.forEach((name) => {
-      const key = nextRaceAssetKeys[name];
-      if (!this.textures.exists(key)) {
-        pendingFiles.set(key, getRaceAssetUrl(name, quality));
-      }
-    });
-
-    const onError = (file: Phaser.Loader.File): void => {
-      if (!pendingFiles.has(file.key)) {
+    void getAssetPreloader(this).loadScene('RaceScene').then(({ failed }) => {
+      if (!this.sys.isActive()) {
         return;
       }
-
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      pendingFiles.forEach((_, key) => {
-        this.load.off(`filecomplete-image-${key}`);
-      });
       this.isBackgroundLoading = false;
-      console.error(`Race graphics failed to load (${quality}): ${file.src}`);
+      if (failed.length === 0) {
+        this.applyQuality(quality, nextBackgroundKey, nextRaceAssetKeys);
+        return;
+      }
+      console.error(`Race graphics failed to load (${quality}): ${failed.join(', ')}`);
       setGraphicsQuality(this.activeQuality);
       this.graphicsSettings?.qualitySelector.refresh();
       this.graphicsSettings?.setEnabled(true);
-    };
-    const finishLoading = (): void => {
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.isBackgroundLoading = false;
-      this.applyQuality(quality, nextBackgroundKey, nextRaceAssetKeys);
-    };
-    const completeFile = (key: string): void => {
-      pendingFiles.delete(key);
-      if (pendingFiles.size === 0) {
-        finishLoading();
-      }
-    };
-
-    if (pendingFiles.size === 0) {
-      finishLoading();
-      return;
-    }
-
-    pendingFiles.forEach((url, key) => {
-      const fileType = key === nextBackgroundKey ? 'image' : 'image';
-      this.load.image(key, url);
-      this.load.once(`filecomplete-${fileType}-${key}`, () => completeFile(key));
     });
-
-    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-    this.load.start();
   }
 
   private applyQuality(

@@ -59,6 +59,15 @@ const STOCK_FRONT = {
   light: 'wheel-light-stock',
 } as const satisfies Partial<AxleVisual>;
 
+/** 1960s cars: drum brakes on the front axle too. */
+const STOCK_FRONT_DRUM = {
+  suspension: 'shock-front-stock',
+  brake: 'brake-drum-stock',
+  tire: 'tire-175-70-r13',
+  rim: 'rim-stock-13',
+  light: 'wheel-light-stock',
+} as const satisfies Partial<AxleVisual>;
+
 /**
  * Daewoo Lanos sedan. Positions are measured on the source picture by
  * scripts/vehicle-art/build-car-layers.py (see its meta.json output).
@@ -74,7 +83,7 @@ export const LANOS_VISUAL: CarVisualProfile = {
   frontAxle: { x: 3472.6, y: 1118.4, wheelScale: 332.6 / WHEEL_ART_TIRE_RADIUS_MM, ...STOCK_FRONT },
 };
 
-/** ZAZ Tavria hatchback (not used in the game yet). */
+/** ZAZ Tavria hatchback. Wheels are the shared 13" art scaled to its 155/70 R13 tires. */
 export const TAVRIA_VISUAL: CarVisualProfile = {
   lengthMm: 3708,
   groundYMm: 1412,
@@ -96,3 +105,24 @@ export function getCarVisualParts(visual: CarVisualProfile): VehiclePartName[] {
   });
   return [...parts];
 }
+
+/**
+ * Moskvich 412 saloon (source picture faces left and is mirrored by
+ * build-car-layers.py). Same stock 13" wheels as the Lanos, drums all round.
+ */
+export const MOSKVICH_412_VISUAL: CarVisualProfile = {
+  lengthMm: 4115,
+  groundYMm: 1517.2,
+  bodyImageOriginMm: { x: 0, y: 0 },
+  bodyPaint: 'moskvich-412-body-paint',
+  bodyDetails: 'moskvich-412-body-details',
+  paintColor: 0xf06a10,
+  rearAxle: { x: 1028.8, y: 1221.2, wheelScale: 296 / WHEEL_ART_TIRE_RADIUS_MM, ...STOCK_REAR },
+  frontAxle: { x: 3485.9, y: 1221.2, wheelScale: 296 / WHEEL_ART_TIRE_RADIUS_MM, ...STOCK_FRONT_DRUM },
+};
+
+/**
+ * Length the race and garage layouts were designed for (the Lanos). Other cars
+ * are drawn at the same millimetre scale, so a shorter car looks shorter.
+ */
+export const REFERENCE_CAR_LENGTH_MM = 4237;

@@ -1,14 +1,14 @@
 import Phaser from 'phaser';
 import {
   getBackgroundKey,
-  getBackgroundUrl,
   preloadBackground,
 } from '../../assets/backgrounds';
 import { GAME_HEIGHT, GAME_WIDTH } from '../../config/gameConfig';
 import { palette } from '../../config/palette';
+import { getBackgroundAsset } from '../../assets/assetBundles';
+import { getAssetPreloader } from '../../assets/AssetPreloadScene';
 import {
   getGraphicsQuality,
-  graphicsQualities,
   setGraphicsQuality,
   type GraphicsQuality,
 } from '../../settings/graphicsQuality';
@@ -56,12 +56,6 @@ export class PartsStoreScene extends Phaser.Scene {
   create(): void {
     this.applyRenderResolution();
     this.createBackground();
-    graphicsQualities.forEach((quality) => {
-      const garageBackgroundKey = getBackgroundKey('sunny-garage', quality);
-      if (this.textures.exists(garageBackgroundKey)) {
-        this.textures.remove(garageBackgroundKey);
-      }
-    });
     this.drawStore(this.scale.width, this.scale.height);
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
     window.addEventListener('resize', this.handleViewportResize);
@@ -184,37 +178,19 @@ export class PartsStoreScene extends Phaser.Scene {
       },
     });
 
-    if (this.textures.exists(this.incomingBackgroundKey)) {
-      this.transitionBackgroundReady = true;
-      this.tryStartGarageBackgroundTransition();
-      return;
-    }
-
-    this.load.image(
-      this.incomingBackgroundKey,
-      getBackgroundUrl('sunny-garage', quality),
-    );
-
-    const onComplete = (): void => {
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.transitionBackgroundReady = true;
-      this.tryStartGarageBackgroundTransition();
-    };
-
-    const onError = (file: Phaser.Loader.File): void => {
-      if (file.key !== this.incomingBackgroundKey) {
+    // Normally already loaded (see AssetPreloadScene); this only waits if it is not.
+    void getAssetPreloader(this).loadScene('GarageScene').then(() => {
+      if (!this.isTransitioning) {
         return;
       }
-
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.load.off(`filecomplete-image-${this.incomingBackgroundKey}`, onComplete);
-      console.error(`Garage background failed to load: ${file.src}`);
-      this.cancelTransition();
-    };
-
-    this.load.once(`filecomplete-image-${this.incomingBackgroundKey}`, onComplete);
-    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-    this.load.start();
+      if (!this.textures.exists(this.incomingBackgroundKey)) {
+        console.error(`Garage background failed to load: ${this.incomingBackgroundKey}`);
+        this.cancelTransition();
+        return;
+      }
+      this.transitionBackgroundReady = true;
+      this.tryStartGarageBackgroundTransition();
+    });
   }
 
   private tryStartGarageBackgroundTransition(): void {
@@ -228,30 +204,30 @@ export class PartsStoreScene extends Phaser.Scene {
       this.incomingBackgroundKey,
     )
       .setDepth(-2)
-      .setScale(this.baseBackgroundScale * 1.18)
+      // at its normal size: the garage then slowly zooms in from here
+      .setScale(this.baseBackgroundScale)
       .setAlpha(0);
+    // The garage background arrives sharp and undimmed; the garage then fades
+    // its own dim + blur in, so this scene's dim fades out with the crossfade.
+    if (this.backgroundOverlay) {
+      this.tweens.add({ targets: this.backgroundOverlay, alpha: 0, duration: 240, ease: 'Cubic.easeInOut' });
+    }
 
+    // The old background zooms away while the garage fades in at normal size.
     this.tweens.add({
-      targets: [this.backgroundImage, this.incomingBackground],
-      alpha: {
-        getEnd: (target: Phaser.GameObjects.Image) => target === this.incomingBackground ? 1 : 0,
-      },
+      targets: this.backgroundImage,
+      alpha: 0,
       scale: this.baseBackgroundScale * 1.18,
       duration: 240,
       ease: 'Cubic.easeInOut',
-      onComplete: () => {
-        if (!this.incomingBackground) {
-          return;
-        }
-
-        this.tweens.add({
-          targets: this.incomingBackground,
-          scale: this.baseBackgroundScale,
-          duration: 190,
-          ease: 'Cubic.easeOut',
-          onComplete: () => this.scene.start('GarageScene'),
-        });
-      },
+    });
+    this.tweens.add({
+      targets: this.incomingBackground,
+      alpha: 1,
+      duration: 240,
+      ease: 'Cubic.easeInOut',
+      // The garage takes over and slowly zooms in, together with its dim + blur.
+      onComplete: () => this.scene.start('GarageScene', { backgroundZoom: 1 }),
     });
   }
 
@@ -274,31 +250,21 @@ export class PartsStoreScene extends Phaser.Scene {
 
     this.isBackgroundLoading = true;
     this.graphicsSettings?.setEnabled(false);
-    this.load.image(key, getBackgroundUrl(BACKGROUND_NAME, quality));
-
-    const onComplete = (): void => {
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.isBackgroundLoading = false;
-      this.applyBackground(key, quality);
-    };
-
-    const onError = (file: Phaser.Loader.File): void => {
-      if (file.key !== key) {
+    void getAssetPreloader(this).loadAssets([getBackgroundAsset(BACKGROUND_NAME, quality)]).then(({ failed }) => {
+      if (!this.sys.isActive()) {
         return;
       }
-
-      this.load.off(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-      this.load.off(`filecomplete-image-${key}`, onComplete);
+      if (failed.length === 0) {
+        this.isBackgroundLoading = false;
+        this.applyBackground(key, quality);
+        return;
+      }
       this.isBackgroundLoading = false;
-      console.error(`Parts store background failed to load (${quality}): ${file.src}`);
+      console.error(`Parts store background failed to load (${quality}): ${key}`);
       setGraphicsQuality(this.activeQuality);
       this.graphicsSettings?.qualitySelector.refresh();
       this.graphicsSettings?.setEnabled(true);
-    };
-
-    this.load.once(`filecomplete-image-${key}`, onComplete);
-    this.load.on(Phaser.Loader.Events.FILE_LOAD_ERROR, onError);
-    this.load.start();
+    });
   }
 
   private applyBackground(key: string, quality: GraphicsQuality): void {

@@ -56,6 +56,11 @@ export const typography = {
       fontStyle: 'bold',
       color: palette.textSecondary,
     },
+    settingsNote: {
+      fontSize: 9,
+      letterSpacing: 1,
+      color: palette.textMuted,
+    },
   },
 } as const;
 

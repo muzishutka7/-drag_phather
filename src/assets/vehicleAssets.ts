@@ -5,27 +5,33 @@ import {
 } from '../settings/graphicsQuality';
 
 /**
- * Car artwork parts. Every part is a separate image so it can be swapped by
- * an upgrade (paint, rims, tires, brakes, suspension).
- * Bodies are split from the side-view PNGs in assets-source/vehicles/; wheels,
- * brakes and suspension are SVGs drawn in millimetres. See scripts/vehicle-art/.
+ * Car artwork. Every part is a separate image so it can be swapped by an
+ * upgrade (paint, rims, tires, brakes, suspension).
+ *
+ * Files live in public/vehicles/:
+ *   cars/<car>/<quality>/body-paint.webp, body-details.webp
+ *   parts/<group>/<quality>/<part>.webp   (wheels, brakes, suspension)
+ * Sources: assets-source/vehicles/ (same layout), see scripts/vehicle-art/.
  */
-export const vehiclePartNames = [
-  'lanos-body-paint',
-  'lanos-body-details',
-  'tavria-body-paint',
-  'tavria-body-details',
-  'tire-175-70-r13',
-  'rim-stock-13',
-  'brake-disc-stock-236',
-  'brake-drum-stock',
-  'caliper-stock-front',
-  'shock-front-stock',
-  'shock-rear-stock',
-  'wheel-light-stock',
-] as const;
+export const VEHICLE_PART_PATHS = {
+  'lanos-body-paint': 'cars/lanos/body-paint',
+  'lanos-body-details': 'cars/lanos/body-details',
+  'tavria-body-paint': 'cars/tavria/body-paint',
+  'tavria-body-details': 'cars/tavria/body-details',
+  'moskvich-412-body-paint': 'cars/moskvich-412/body-paint',
+  'moskvich-412-body-details': 'cars/moskvich-412/body-details',
+  'tire-175-70-r13': 'parts/wheels/tire-175-70-r13',
+  'rim-stock-13': 'parts/wheels/rim-stock-13',
+  'wheel-light-stock': 'parts/wheels/wheel-light-stock',
+  'brake-disc-stock-236': 'parts/brakes/brake-disc-stock-236',
+  'brake-drum-stock': 'parts/brakes/brake-drum-stock',
+  'caliper-stock-front': 'parts/brakes/caliper-stock-front',
+  'shock-front-stock': 'parts/suspension/shock-front-stock',
+  'shock-rear-stock': 'parts/suspension/shock-rear-stock',
+} as const;
 
-export type VehiclePartName = (typeof vehiclePartNames)[number];
+export type VehiclePartName = keyof typeof VEHICLE_PART_PATHS;
+export const vehiclePartNames = Object.keys(VEHICLE_PART_PATHS) as VehiclePartName[];
 
 /** Pixels per millimetre the images were rendered at, per quality. */
 export const VEHICLE_PIXELS_PER_MM: Record<GraphicsQuality, number> = {
@@ -39,7 +45,9 @@ export function getVehiclePartKey(name: VehiclePartName, quality: GraphicsQualit
 }
 
 export function getVehiclePartUrl(name: VehiclePartName, quality: GraphicsQuality): string {
-  return `${import.meta.env.BASE_URL}vehicles/${quality}/${name}.webp`;
+  const path = VEHICLE_PART_PATHS[name];
+  const slash = path.lastIndexOf('/');
+  return `${import.meta.env.BASE_URL}vehicles/${path.slice(0, slash)}/${quality}/${path.slice(slash + 1)}.webp`;
 }
 
 export function preloadVehicleAssets(

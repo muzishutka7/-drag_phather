@@ -1,11 +1,15 @@
 import Phaser from 'phaser';
 import { getSoundVolumeGain } from '../settings/soundVolume';
+import { ENGINE_SOUND_KEYS } from './engineSoundBank';
+import { SampledEngineSound, type EngineSampleBuffers } from './sampledEngineSound';
 
 /**
- * All race sounds are synthesized with the Web Audio API at runtime,
- * so there are no audio files to load or license.
+ * Race sounds. The engine plays real recordings (see SampledEngineSound and
+ * engineSoundBank); tires, wind and signals are synthesized with the Web
+ * Audio API. If the engine recordings are missing, a synthesized engine is
+ * used instead.
  *
- * Engine model: a 4-cylinder 4-stroke fires twice per crank revolution,
+ * Synthesized engine model: a 4-cylinder 4-stroke fires twice per crank revolution,
  * so the base tone is rpm / 60 * 2 Hz (900 rpm → 30 Hz, 6000 rpm → 200 Hz).
  * Throttle load makes the sound louder, brighter and more distorted.
  */
@@ -16,6 +20,8 @@ export interface EngineSoundState {
   redlineRpm: number;
   /** Engine is producing power (throttle on and not cut by the limiter). */
   firing: boolean;
+  /** Throttle held against the rev limiter. */
+  limiter: boolean;
   wheelSpinKph: number;
   speedKph: number;
 }
@@ -66,6 +72,20 @@ function createDistortionCurve(amount: number): Float32Array<ArrayBuffer> {
   return curve;
 }
 
+/** Decoded engine recordings, if all of them are loaded. */
+function getEngineSamples(scene: Phaser.Scene): EngineSampleBuffers | undefined {
+  const get = (key: string): AudioBuffer | undefined => {
+    const data: unknown = scene.cache.audio.get(key);
+    return data instanceof AudioBuffer ? data : undefined;
+  };
+  const startStop = get(ENGINE_SOUND_KEYS.startStop);
+  const idleLoop = get(ENGINE_SOUND_KEYS.idleLoop);
+  const rpmLoops = get(ENGINE_SOUND_KEYS.rpmLoops);
+  return startStop && idleLoop && rpmLoops
+    ? { startStop, idleLoop, rpmLoops }
+    : undefined;
+}
+
 export class RaceAudio {
   private readonly context: AudioContext | undefined;
   private readonly master?: GainNode;
@@ -90,6 +110,7 @@ export class RaceAudio {
   private smokeGain?: GainNode;
   private windGain?: GainNode;
 
+  private sampledEngine?: SampledEngineSound;
   private smoothedLoad = 0;
   private readonly unlock = (): void => {
     if (this.context?.state === 'suspended') {
@@ -111,7 +132,16 @@ export class RaceAudio {
     compressor.ratio.value = 4;
     this.master.connect(compressor).connect(context.destination);
 
-    this.buildEngine(context);
+    const engineSamples = getEngineSamples(scene);
+    if (engineSamples) {
+      const engineBus = this.track(context.createGain());
+      engineBus.gain.value = ENGINE_VOLUME;
+      engineBus.connect(this.master);
+      this.sampledEngine = new SampledEngineSound(context, engineBus, engineSamples);
+      this.sampledEngine.start();
+    } else {
+      this.buildEngine(context);
+    }
     this.buildTires(context);
     this.buildWind(context);
 
@@ -138,6 +168,7 @@ export class RaceAudio {
     set(this.master.gain, MASTER_VOLUME * getSoundVolumeGain(), 0.05);
 
     // --- Engine ---
+    this.sampledEngine?.update(state);
     const firingHz = (Math.max(state.rpm, 300) / 60) * (CYLINDERS / 2);
     const rpmProgress = Phaser.Math.Clamp(
       (state.rpm - state.idleRpm) / (state.redlineRpm - state.idleRpm),
@@ -236,6 +267,8 @@ export class RaceAudio {
   }
 
   destroy(): void {
+    this.sampledEngine?.destroy();
+    this.sampledEngine = undefined;
     this.sources.forEach((source) => {
       try {
         source.stop();

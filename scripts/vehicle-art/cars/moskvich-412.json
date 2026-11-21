@@ -1,0 +1,3 @@
+{"name": "moskvich-412", "flip": true, "lengthMm": 4115, "wheels": [[466, 687], [1130, 687]], "tireRadiusPx": 80,
+ "paintHue": [8, 42], "windows": [388, 368, 998, 499], "paintExclude": [[1253, 603, 1286, 632]],
+ "glassMinV": 0.6, "glassMinThicknessPx": 4, "glassMinArea": 120, "keepWindowTint": false}

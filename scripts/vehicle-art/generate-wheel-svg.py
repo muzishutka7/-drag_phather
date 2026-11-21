@@ -1,4 +1,4 @@
-"""Usage: python scripts/vehicle-art/generate-wheel-svg.py assets-source/vehicles/lanos
+"""Usage: python scripts/vehicle-art/generate-wheel-svg.py assets-source/vehicles/parts/wheels
 
 Stock 13" steel wheel (shared by all cars), drawn so that it can spin without
 flicker: every rotating layer (tire, rim) is shaded only radially (no light

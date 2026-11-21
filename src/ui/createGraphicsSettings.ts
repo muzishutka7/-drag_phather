@@ -8,7 +8,15 @@ import { createUiText } from './createUiText';
 import { createLanguageSelector } from './createLanguageSelector';
 import { createRenderResolutionSelector, type RenderResolutionSelector } from './createRenderResolutionSelector';
 import { createFrameRateSelector } from './createFrameRateSelector';
+import { SETTING_ROW_HEIGHT } from './createSegmentedSetting';
 import { createSoundVolumeSelector } from './createSoundVolumeSelector';
+
+const PANEL_WIDTH = 300;
+const PANEL_PADDING = 16;
+const HEADER_GAP = 14;
+const ROW_GAP = 8;
+/** Space around the thin line between groups of rows. */
+const GROUP_GAP = 22;
 
 export interface GraphicsSettings {
   container: Phaser.GameObjects.Container;
@@ -30,8 +38,18 @@ export function createGraphicsSettings(
 ): GraphicsSettings {
   const root = scene.add.container(x, y);
   const buttonSize = 48 * scale;
-  const panelWidth = Math.min(360 * scale, scene.scale.width - 24 * scale);
-  const panelHeight = 312 * scale;
+  const panelWidth = Math.min(PANEL_WIDTH * scale, scene.scale.width - 24 * scale);
+  const padding = PANEL_PADDING * scale;
+  const rowWidth = panelWidth - padding * 2;
+  const rowStep = (SETTING_ROW_HEIGHT + ROW_GAP) * scale;
+
+  // Invisible full-screen layer under the open panel: a tap outside closes it
+  // (and does not reach the buttons underneath).
+  const outside = scene.add.zone(-x, -y, scene.scale.width, scene.scale.height)
+    .setOrigin(0)
+    .setInteractive();
+  outside.on(Phaser.Input.Events.POINTER_UP, () => setOpen(false));
+  root.add(outside);
 
   const button = scene.add.container(0, 0);
   button.add(
@@ -45,76 +63,86 @@ export function createGraphicsSettings(
     Phaser.Geom.Rectangle.Contains,
   );
   button.on(Phaser.Input.Events.POINTER_UP, () => {
-    panel.setVisible(!panel.visible);
-    onOpenChange(panel.visible);
+    setOpen(!panel.visible);
   });
   root.add(button);
 
-  const panel = scene.add.container(
-    (buttonSize - panelWidth) / 2,
-    buttonSize / 2 + 12 * scale + panelHeight / 2,
-  );
-  panel.add(
-    scene.add.rectangle(0, 0, panelWidth, panelHeight, palette.background, 1)
-      .setStrokeStyle(1.5 * scale, palette.trackBorder),
-  );
-  panel.add(
-    createUiText(scene, 0, -panelHeight * 0.4, 'settingsTitle', 'settingsTitle', scale),
-  );
+  // Panel content is laid out top-down from the panel's top-left corner.
+  const panel = scene.add.container(buttonSize / 2 - panelWidth, buttonSize / 2 + 10 * scale);
+  const background = scene.add.graphics();
+  const lines = scene.add.graphics();
+  panel.add([background, lines]);
+  const left = padding;
+  let cursorY = padding;
 
-  const closeButton = createUiText(
-    scene,
-    panelWidth / 2 - 18 * scale,
-    -panelHeight * 0.43,
-    'settingsClose',
-    'settingsClose',
-    scale,
-  );
-  closeButton.setInteractive();
+  // Header: title on the left, close on the right.
+  const title = createUiText(scene, left, cursorY + 8 * scale, 'settingsTitle', 'settingsTitle', scale)
+    .setOrigin(0, 0.5);
+  panel.add(title);
+  const closeButton = createUiText(scene, panelWidth - padding, cursorY + 8 * scale, 'settingsClose', 'settingsClose', scale)
+    .setOrigin(1, 0.5);
+  closeButton.setInteractive({ useHandCursor: true });
   closeButton.on(Phaser.Input.Events.POINTER_UP, () => {
-    panel.setVisible(false);
-    onOpenChange(false);
+    setOpen(false);
   });
   panel.add(closeButton);
+  cursorY += 16 * scale + HEADER_GAP * scale;
 
-  const qualitySelector = createGraphicsQualitySelector(
-    scene,
-    0,
-    -panelHeight * 0.27,
-    scale,
-    onQualityChange,
-  );
+  const rowY = (): number => cursorY + (SETTING_ROW_HEIGHT * scale) / 2;
+  const separator = (): void => {
+    cursorY += (GROUP_GAP / 2 - ROW_GAP) * scale;
+    lines.lineStyle(scale, palette.trackBorder, 0.6);
+    lines.lineBetween(left, cursorY, panelWidth - padding, cursorY);
+    cursorY += (GROUP_GAP / 2) * scale;
+  };
+
+  // --- Graphics ---
+  const qualitySelector = createGraphicsQualitySelector(scene, left, rowY(), rowWidth, scale, onQualityChange);
   panel.add(qualitySelector.container);
-  const resolutionSelector = createRenderResolutionSelector(
-    scene,
-    0,
-    -panelHeight * 0.1,
-    scale,
-    onResolutionChange,
-  );
+  cursorY += rowStep;
+  const resolutionSelector = createRenderResolutionSelector(scene, left, rowY(), rowWidth, scale, onResolutionChange);
   panel.add(resolutionSelector.container);
-  panel.add(createFrameRateSelector(scene, 0, panelHeight * 0.07, scale));
-  panel.add(
-    createUiText(
-      scene,
-      0,
-      panelHeight * 0.17,
-      'frameRateRestartHint',
-      'qualityLabel',
-      scale,
-    ),
-  );
-  panel.add(createSoundVolumeSelector(scene, 0, panelHeight * 0.28, scale));
-  panel.add(
-    createLanguageSelector(
-      scene,
-      0,
-      panelHeight * 0.41,
-      scale,
-      onLocaleChange,
-    ),
-  );
+  cursorY += rowStep;
+  panel.add(createFrameRateSelector(scene, left, rowY(), rowWidth, scale));
+  cursorY += rowStep;
+  separator();
+
+  // --- Sound ---
+  panel.add(createSoundVolumeSelector(scene, left, rowY(), rowWidth, scale, 'effects', 'effectsSetting'));
+  cursorY += rowStep;
+  panel.add(createSoundVolumeSelector(scene, left, rowY(), rowWidth, scale, 'music', 'musicSetting'));
+  cursorY += rowStep;
+  separator();
+
+  // --- Language ---
+  panel.add(createLanguageSelector(scene, left, rowY(), rowWidth, scale, onLocaleChange));
+  cursorY += rowStep;
+
+  // Footnote for the FPS* row.
+  const note = createUiText(scene, left, cursorY + 4 * scale, 'frameRateRestartHint', 'settingsNote', scale)
+    .setOrigin(0, 0.5);
+  panel.add(note);
+  cursorY += 8 * scale + padding;
+
+  const panelHeight = cursorY;
+  background.fillStyle(palette.background, 0.97);
+  background.fillRoundedRect(0, 0, panelWidth, panelHeight, 12 * scale);
+  background.lineStyle(1.5 * scale, palette.trackBorder, 1);
+  background.strokeRoundedRect(0, 0, panelWidth, panelHeight, 12 * scale);
   panel.setVisible(initiallyOpen);
+  outside.setVisible(initiallyOpen);
+  if (outside.input) {
+    outside.input.enabled = initiallyOpen;
+  }
+
+  function setOpen(open: boolean): void {
+    panel.setVisible(open);
+    outside.setVisible(open);
+    if (outside.input) {
+      outside.input.enabled = open;
+    }
+    onOpenChange(open);
+  }
   root.add(panel);
 
   return {

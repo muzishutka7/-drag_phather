@@ -1,52 +1,77 @@
-export const soundVolumes = ['off', 'half', 'full'] as const;
+export const soundVolumes = ['off', 'low', 'half', 'full'] as const;
 export type SoundVolume = (typeof soundVolumes)[number];
 
-const STORAGE_KEY = 'drag-racing.sound-volume';
-const DEFAULT_VOLUME: SoundVolume = 'full';
+/** effects = engine, tires, signals; music = background music. */
+export type SoundChannel = 'effects' | 'music';
+
 const VOLUME_GAIN: Record<SoundVolume, number> = {
   off: 0,
+  low: 0.3,
   half: 0.5,
   full: 1,
 };
-let inMemoryVolume: SoundVolume | undefined;
+
+const CHANNELS: Record<SoundChannel, { storageKey: string; defaultVolume: SoundVolume }> = {
+  // The effects key is the one the old single "sound" setting used.
+  effects: { storageKey: 'drag-racing.sound-volume', defaultVolume: 'full' },
+  music: { storageKey: 'drag-racing.music-volume', defaultVolume: 'half' },
+};
+
+const inMemory = new Map<SoundChannel, SoundVolume>();
+const listeners = new Set<(channel: SoundChannel, volume: SoundVolume) => void>();
 
 function isSoundVolume(value: string | null): value is SoundVolume {
   return soundVolumes.some((volume) => volume === value);
 }
 
-export function getSoundVolume(): SoundVolume {
-  if (inMemoryVolume) {
-    return inMemoryVolume;
+export function getChannelVolume(channel: SoundChannel): SoundVolume {
+  const cached = inMemory.get(channel);
+  if (cached) {
+    return cached;
   }
 
-  if (typeof window === 'undefined') {
-    return DEFAULT_VOLUME;
+  const { storageKey, defaultVolume } = CHANNELS[channel];
+  let volume = defaultVolume;
+  if (typeof window !== 'undefined') {
+    try {
+      const saved = window.localStorage.getItem(storageKey);
+      volume = isSoundVolume(saved) ? saved : defaultVolume;
+    } catch (error) {
+      console.warn(`Could not read the ${channel} volume preference.`, error);
+    }
   }
-
-  try {
-    const savedVolume = window.localStorage.getItem(STORAGE_KEY);
-    inMemoryVolume = isSoundVolume(savedVolume) ? savedVolume : DEFAULT_VOLUME;
-    return inMemoryVolume;
-  } catch (error) {
-    console.warn('Could not read the sound volume preference.', error);
-    return DEFAULT_VOLUME;
-  }
+  inMemory.set(channel, volume);
+  return volume;
 }
 
-export function setSoundVolume(volume: SoundVolume): void {
-  inMemoryVolume = volume;
+export function setChannelVolume(channel: SoundChannel, volume: SoundVolume): void {
+  inMemory.set(channel, volume);
+  listeners.forEach((listener) => listener(channel, volume));
 
   if (typeof window === 'undefined') {
     return;
   }
 
   try {
-    window.localStorage.setItem(STORAGE_KEY, volume);
+    window.localStorage.setItem(CHANNELS[channel].storageKey, volume);
   } catch (error) {
-    console.warn('Could not save the sound volume preference.', error);
+    console.warn(`Could not save the ${channel} volume preference.`, error);
   }
 }
 
-export function getSoundVolumeGain(volume = getSoundVolume()): number {
-  return VOLUME_GAIN[volume];
+export function getChannelVolumeGain(channel: SoundChannel): number {
+  return VOLUME_GAIN[getChannelVolume(channel)];
+}
+
+/** Called after every volume change. Returns a function that unsubscribes. */
+export function onChannelVolumeChange(
+  listener: (channel: SoundChannel, volume: SoundVolume) => void,
+): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/** Sound effects volume (engine, tires, signals). */
+export function getSoundVolumeGain(): number {
+  return getChannelVolumeGain('effects');
 }

@@ -4,6 +4,13 @@ export type GraphicsQuality = (typeof graphicsQualities)[number];
 const STORAGE_KEY = 'drag-racing.graphics-quality';
 const DEFAULT_QUALITY: GraphicsQuality = 'medium';
 let inMemoryQuality: GraphicsQuality | undefined;
+const qualityListeners = new Set<(quality: GraphicsQuality) => void>();
+
+/** Called after every quality change. Returns a function that unsubscribes. */
+export function onGraphicsQualityChange(listener: (quality: GraphicsQuality) => void): () => void {
+  qualityListeners.add(listener);
+  return () => qualityListeners.delete(listener);
+}
 
 function isGraphicsQuality(value: string | null): value is GraphicsQuality {
   return graphicsQualities.some((quality) => quality === value);
@@ -28,7 +35,11 @@ export function getGraphicsQuality(): GraphicsQuality {
 }
 
 export function setGraphicsQuality(quality: GraphicsQuality): void {
+  const changed = quality !== getGraphicsQuality();
   inMemoryQuality = quality;
+  if (changed) {
+    qualityListeners.forEach((listener) => listener(quality));
+  }
 
   if (typeof window === 'undefined') {
     return;

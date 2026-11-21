@@ -1,7 +1,8 @@
 // Renders every SVG in <svgDir> to PNG at <pxPerMm> pixels per millimetre.
 // Needs Playwright with Chromium: npm i -D playwright && npx playwright install chromium
-// Usage: node scripts/vehicle-art/render-vehicle-assets.cjs assets-source/vehicles/lanos out/png 0.3
-// Then convert PNG to WebP (quality 90) into public/vehicles/<low|medium|high>/.
+// Usage: node scripts/vehicle-art/render-vehicle-assets.cjs assets-source/vehicles/parts/wheels out/wheels/high 0.4
+// Then convert PNG to WebP (quality 90) into public/vehicles/parts/<group>/<low|medium|high>/
+// (group = wheels | brakes | suspension, same as the source folder).
 // Scales used by the game (see src/assets/vehicleAssets.ts): low 0.16, medium 0.27, high 0.4.
 const { chromium } = require('playwright');
 const fs = require('fs'); const path = require('path');
